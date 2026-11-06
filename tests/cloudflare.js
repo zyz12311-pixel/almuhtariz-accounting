@@ -1,0 +1,46 @@
+import assert from 'node:assert/strict';
+import worker from '../cloudflare/worker.js';
+const env={SUPABASE_URL:'https://example.supabase.co',SUPABASE_PUBLISHABLE_KEY:'public-test-key',SUPABASE_SERVICE_ROLE_KEY:'never-send-this',ASSETS:{fetch:async()=>new Response('asset')}};
+const realFetch=globalThis.fetch;
+let calls=[],role='owner',expired=false;
+globalThis.fetch=async(url,options)=>{
+  calls.push({url,options});
+  assert.equal(options.headers.apikey,env.SUPABASE_PUBLISHABLE_KEY);
+  assert.ok(!JSON.stringify(options).includes(env.SUPABASE_SERVICE_ROLE_KEY));
+  if(url.endsWith('/auth/v1/settings'))return Response.json({});
+  if(url.includes('/auth/v1/token'))return Response.json({access_token:'test.jwt.token',expires_in:3600});
+  if(url.endsWith('/auth/v1/user'))return expired?Response.json({}, {status:401}):Response.json({id:'user-one',email:'owner@example.com'});
+  if(url.includes('/organization_members?'))return Response.json([{organization_id:'org-one',role}]);
+  if(url.includes('/items?'))return Response.json([{name_ar:'صنف',unit_price:1200}]);
+  if(url.includes('/organizations?'))return Response.json([{id:'org-one',name_ar:'منشأة'}]);
+  if(url.includes('/invoices?')||url.includes('/parties?'))return Response.json([]);
+  throw Error('Unexpected upstream '+url);
+};
+const request=(path,options={})=>worker.fetch(new Request('https://app.example'+path,options),env);
+const auth={Cookie:'__Host-almuhtariz=test.jwt.token'};
+try{
+  assert.equal(await(await request('/styles.css')).text(),'asset');
+  assert.equal((await(await request('/api/state')).json()).user,null);
+  assert.equal((await(await request('/api/cloud/health')).json()).connected,true);
+  assert.equal((await request('/api/cloud/overview')).status,401);
+  const login={method:'POST',headers:{Origin:'https://app.example','Content-Type':'application/json'},body:JSON.stringify({username:'owner@example.com',password:'test-password'})};
+  const logged=await request('/api/login',login);
+  assert.equal(logged.status,200);assert.match(logged.headers.get('set-cookie'),/HttpOnly; Secure; SameSite=Strict/);
+  assert.deepEqual(await logged.json(),{ok:true});
+  const before=calls.length;
+  assert.equal((await request('/api/login',{...login,headers:{...login.headers,Origin:'https://evil.example'}})).status,403);
+  assert.equal(calls.length,before);
+  assert.equal((await request('/api/login',{...login,body:'x'.repeat(17000)})).status,413);
+  assert.equal((await request('/api/cloud/overview?organization_id=another-org',{headers:auth})).status,403);
+  assert.equal((await(await request('/api/cloud/overview',{headers:auth})).json()).organizations[0].name_ar,'منشأة');
+  role='staff';calls=[];
+  const staff=await(await request('/api/cloud/overview',{headers:auth})).json();
+  assert.deepEqual(staff.invoices,[]);assert.deepEqual(staff.parties,[]);
+  assert.ok(!calls.some(c=>/\/(invoices|parties|organizations)\?/.test(c.url)));
+  assert.ok(!calls.find(c=>c.url.includes('/items?')).url.includes('purchase_cost'));
+  expired=true;
+  const stale=await request('/api/state',{headers:auth});assert.equal((await stale.json()).user,null);assert.match(stale.headers.get('set-cookie'),/Max-Age=0/);
+  assert.equal((await request('/api/setup',login)).status,503);
+  assert.equal((await worker.fetch(new Request('https://app.example/api/state'),{...env,SUPABASE_URL:'https://evil.example'})).status,503);
+  console.log('PASS: cloud auth, secure cookies, CSRF, membership isolation, staff projection, expiry, secret isolation');
+}finally{globalThis.fetch=realFetch;}

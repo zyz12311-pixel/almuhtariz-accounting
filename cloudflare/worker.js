@@ -1,13 +1,8 @@
-// Static hosting only. Never import the local Node/SQLite server into Workers.
+import { cloudApi } from './api.js';
 export default {
   async fetch(request, env) {
     const { pathname } = new URL(request.url);
-    if (pathname === '/api' || pathname.startsWith('/api/')) {
-      return Response.json({
-        error: 'الربط السحابي قيد الإعداد. استخدم نسخة الفرع المحلية لإدارة الحسابات حاليًا.',
-        code: 'CLOUD_BACKEND_NOT_READY'
-      }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
-    }
+    if (pathname === '/api' || pathname.startsWith('/api/')) return cloudApi(request, env);
     return env.ASSETS.fetch(request);
   }
 };

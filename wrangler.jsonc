@@ -3,6 +3,9 @@
   "name": "almuhtariz-accounting",
   "main": "cloudflare/worker.js",
   "compatibility_date": "2026-11-06",
+  "vars": {
+    "SUPABASE_URL": "https://tdpozajnzuaevtwmtrzo.supabase.co"
+  },
   "assets": {
     "directory": "./web",
     "binding": "ASSETS",

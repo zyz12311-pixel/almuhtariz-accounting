@@ -63,6 +63,12 @@ function authScreen() {
  const setup=S.state.setup_needed;
  const motion=localStorage.getItem('almuhtariz.motion')!=='off'&&!matchMedia('(prefers-reduced-motion: reduce)').matches;
  $('#app').innerHTML='<section class="auth-entry" data-motion="'+(motion?'on':'off')+'"><div class="auth-ambient" aria-hidden="true"></div><div class="auth-layout"><header class="auth-header"><a href="#" id="auth-home" class="entry-brand"><img src="/assets/almuhtariz-logo.png" alt="شعار المحترز"><span><b>المحترز للمحاسبة</b><small>وإدارة الأعمال</small></span></a><button id="back-activities" type="button">تغيير النشاط ←</button></header><div class="auth-story"><span class="auth-eyebrow">'+esc(WORKSPACES[workspace].name)+'</span><h1>خطوتك القادمة،<br><em>أكثر وضوحًا.</em></h1><p>حساباتك وعملاؤك وفواتيرك.<br>كل التفاصيل في مساحة عملك.</p><div class="auth-emblem" aria-hidden="true"><span></span><img src="/assets/almuhtariz-logo.png" alt=""></div><div class="auth-local"><i></i> متصل بخادم الفرع المحلي</div></div><section class="auth-panel"><div class="auth-panel-heading"><span class="eyebrow">'+(setup?'لنبدأ معًا':'أهلًا بعودتك')+'</span><h2>'+(setup?'أنشئ مساحة أعمالك':'سجّل دخولك')+'</h2><p>'+(setup?'بيانات بسيطة لتجهيز منشأتك وحساب المالك.':'أدخل بيانات حسابك للمتابعة إلى مساحة عملك.')+'</p></div><div id="msg" class="msg" role="status" hidden></div><form id="login-form">'+(setup?'<label for="co">اسم المنشأة<input id="co" name="company" autocomplete="organization" placeholder="اسم منشأتك" required></label>':'')+'<label for="u">اسم المستخدم<input id="u" name="username" autocomplete="username" placeholder="أدخل اسم المستخدم" required></label><label for="p">كلمة المرور</label><div class="password-field"><input id="p" name="password" type="password" autocomplete="'+(setup?'new-password':'current-password')+'" placeholder="'+(setup?'8 أحرف على الأقل':'أدخل كلمة المرور')+'" '+(setup?'minlength="8"':'')+' required><button id="toggle-password" type="button" aria-pressed="false" aria-label="إظهار كلمة المرور">إظهار</button></div><button class="auth-submit" type="submit" id="go">'+(setup?'إنشاء وبدء العمل':'دخول مساحة العمل')+' <span>←</span></button><p class="auth-form-note">'+(setup?'سيكون هذا الحساب مالك المنشأة. يمكنك إضافة فريقك لاحقًا.':'استخدم الحساب الذي أنشأه مالك المنشأة لك.')+'</p></form><div class="auth-panel-footer"><span>'+esc(WORKSPACES[workspace].name)+'</span><span>المحترز للمحاسبة</span></div></section><footer class="auth-footer">أعمال متعددة. هوية واحدة.</footer></div></section>';
+ if(S.state.mode==='cloud'){
+   $('#u').type='email';$('#u').placeholder='البريد الإلكتروني لحساب التطبيق';
+   $('label[for="u"]').firstChild.textContent='البريد الإلكتروني';
+   $('.auth-local').textContent='الدخول السحابي عبر Supabase';
+   $('.auth-form-note').textContent='استخدم حساب التطبيق المرتبط بمنشأتك. حساب لوحة Supabase منفصل عن حساب التطبيق.';
+ }
  const back=e=>{e.preventDefault();S.activitySelected=false;activityScreen();};$('#back-activities').onclick=back;$('#auth-home').onclick=back;
  $('#toggle-password').onclick=()=>{const input=$('#p'),button=$('#toggle-password'),show=input.type==='password';input.type=show?'text':'password';button.textContent=show?'إخفاء':'إظهار';button.setAttribute('aria-pressed',String(show));button.setAttribute('aria-label',show?'إخفاء كلمة المرور':'إظهار كلمة المرور');};
  $('#login-form').onsubmit=guard(async e=>{e.preventDefault();const button=$('#go'),label=button.innerHTML;button.disabled=true;button.textContent='جارٍ تجهيز مساحة عملك…';try{const body={username:$('#u').value.trim(),password:$('#p').value};if(setup)await api('setup',{method:'POST',body:{...body,company_name:$('#co').value.trim(),activity:workspace}});await api('login',{method:'POST',body});sessionStorage.skipActivityOnce='1';location.reload();}finally{button.disabled=false;button.innerHTML=label;}});
@@ -267,13 +273,15 @@ async function reviewInvoice(total, count) {
 }
 
 // ---------- التشغيل ----------
-async function route() { if(S.state?.user?.role==='staff'){workspace='trade';S.activitySelected=true;if(location.hash!=='#pos')history.replaceState(null,'','#pos');}
+async function route() {
+ if(S.state.mode==='cloud' && S.state.user){const cloud=await import('./cloud-workspace.js');return cloud.renderCloudWorkspace(S.state,api);}
+ if(S.state?.user?.role==='staff'){workspace='trade';S.activitySelected=true;if(location.hash!=='#pos')history.replaceState(null,'','#pos');}
  if (!S.introComplete && sessionStorage.almuhtarizOpened!=='1') return openingScreen(); if (!S.activitySelected) return activityScreen(); if (!S.state.user) return authScreen(); const k = (location.hash.slice(1) || (S.state.user.role === 'staff' ? 'pos' : 'dashboard')); try { await (pages[k] || pages.dashboard)(); } catch (e) { shell(`<div class="msg">${esc(e.message)}</div>`); } }
 (async () => {
   S.state = await api('state');
   if (S.state.activity && WORKSPACES[S.state.activity]) workspace=S.state.activity;
   if (sessionStorage.skipActivityOnce==='1') { S.activitySelected=true; delete sessionStorage.skipActivityOnce; }
-  if (S.state.user) { S.ui = await api('preferences/ui'); applyUI(); }
+  if (S.state.user && S.state.mode!=='cloud') { S.ui = await api('preferences/ui'); applyUI(); }
   addEventListener('hashchange', route); route();
 })().catch(e => {
   $('#app').innerHTML = `<main class="auth"><h1>المحترز للمحاسبة وإدارة الأعمال</h1><div class="msg" role="alert">${esc(e.message)}</div><button id="retry-start">إعادة المحاولة</button></main>`;

@@ -6,3 +6,4 @@ await import('./migrations.js');
 await import('./compliance.js');
 await import('./local-tools.js');
 await import('./inventory.js');
+await import('./cloudflare.js');
