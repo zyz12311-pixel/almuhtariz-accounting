@@ -1,0 +1,24 @@
+/* Screen typography: stronger Arabic text and contrast, independent of invoice print templates. */
+:root{--tx:#182230;--mut:#475467;--sbt:#344054}
+[data-theme=dark]{--tx:#f2f5fa;--mut:#c1cad8;--sbt:#d8e0eb}
+.shell{line-height:1.7;font-weight:500}
+.shell nav>a:not(.brand){font-size:15px;font-weight:600;color:var(--sbt)}
+.shell nav a.on,.shell nav a:hover:not(.brand){color:var(--accent);font-weight:700}
+.shell label,.shell .item-fields label,.shell .warehouse-grid label{font-size:15px;font-weight:600;color:var(--tx)}
+.shell input,.shell select,.shell textarea{font-size:16px;font-weight:500;color:var(--tx)}
+.shell input::placeholder,.shell textarea::placeholder{color:var(--mut);opacity:1;font-weight:400}
+.shell button,.shell .button{font-size:15px;font-weight:600}
+.shell th{font-size:14px;font-weight:700;color:var(--tx)}
+.shell td{font-size:15px;font-weight:500;color:var(--tx)}
+.shell .hint,.shell .cell-sub,.shell .section-heading p,.shell .page-heading p,.shell .metric-label,.shell .item-summary small{font-size:14px;font-weight:500;color:var(--mut);opacity:1}
+.shell .workspace-label,.shell .nav-label,.shell .profile small,.shell .brand small{font-size:12px;font-weight:600;color:var(--mut)}
+.shell .eyebrow{font-weight:700;color:var(--mut)}
+.shell .item-tabs button{font-weight:600;color:var(--mut)}
+.shell .item-tabs button.selected{color:#624709;background:#f6edd7;font-weight:700}
+.shell .item-unit-row label{font-size:14px;font-weight:600}
+.stock-dialog label{font-size:15px;font-weight:600;color:var(--tx)}
+.stock-dialog input,.stock-dialog select,.stock-dialog td{font-size:15px;font-weight:500}
+.auth-panel label{font-size:15px;font-weight:600;color:#f0ede5}
+.auth-panel input{font-size:16px;font-weight:500;color:#fff}
+.auth-panel input::placeholder{color:#b9c1ce;font-size:14px;opacity:1}
+.auth-panel-heading p,.auth-form-note{font-size:13px;color:#c8ced8}

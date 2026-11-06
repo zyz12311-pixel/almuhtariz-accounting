@@ -1,0 +1,14 @@
+{
+  "executable": "C:\\PATH\\TO\\JAVA11\\bin\\java.exe",
+  "arguments": [
+    "-Dfile.encoding=UTF-8",
+    "-jar",
+    "C:\\PATH\\TO\\SDK\\Apps\\zatca-einvoicing-sdk-238-R3.4.8.jar",
+    "-validate",
+    "-invoice",
+    "{invoice}"
+  ],
+  "sdkConfig": "C:\\PATH\\TO\\SDK\\Configuration\\config.json",
+  "cwd": "C:\\PATH\\TO\\SDK",
+  "note": "Official Java SDK 3.4.8. Set paths and expected PIH before validation. Exit code 0 alone is not a passing validation."
+}

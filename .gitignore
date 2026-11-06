@@ -24,3 +24,7 @@ credentials*.json
 secrets*.json
 csid*.json
 .supabase/
+
+.vs/
+*.suo
+*.user

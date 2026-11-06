@@ -1,0 +1,42 @@
+import crypto from 'node:crypto';
+import {scaledInteger} from './money.js';
+import {tx} from './db.js';
+export const micro=value=>Number(scaledInteger(value,6,'الكمية'));
+const id=value=>{const n=Number(value);if(!Number.isSafeInteger(n)||n<1)throw Error('معرف غير صالح');return n;};
+const hash=value=>crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+export function baseQuantity(quantity,factor){const product=BigInt(micro(quantity))*BigInt(factor);if(product%1000000n)throw Error('تحويل الوحدة ينتج كمية بأكثر من 6 منازل عشرية');const q=product/1000000n;if(q>BigInt(Number.MAX_SAFE_INTEGER))throw Error('الكمية أكبر من المسموح');return Number(q);}
+export const balance=(db,item,warehouse)=>db.prepare('SELECT COALESCE(SUM(delta_micro),0) quantity FROM stock_movements WHERE item_id=? AND warehouse_id=?').get(item,warehouse).quantity;
+export function recordStock(db,body,user){return tx(db,()=>{
+ const itemId=id(body.item_id),warehouseId=id(body.warehouse_id),quantity=micro(body.qty),kind=body.kind;
+ if(!quantity)throw Error('الكمية يجب أن تكون أكبر من صفر');
+ const item=db.prepare('SELECT * FROM items WHERE id=? AND active=1').get(itemId);if(!item||!item.track_stock||item.item_kind!=='product')throw Error('اختر صنفًا مخزنيًا فعالًا');
+ if(!db.prepare('SELECT 1 FROM warehouses WHERE id=? AND active=1').get(warehouseId))throw Error('المستودع غير موجود أو موقوف');
+ if(!['opening','receipt','issue','adjust_in','adjust_out','transfer'].includes(kind))throw Error('نوع الحركة غير صالح');
+ const reason=String(body.reason||'').trim();if(!reason||reason.length>500)throw Error('سبب الحركة أو مرجعها مطلوب (حتى 500 حرف)');
+ const target=kind==='transfer'?id(body.target_warehouse_id):null;if(target&&(target===warehouseId||!db.prepare('SELECT 1 FROM warehouses WHERE id=? AND active=1').get(target)))throw Error('اختر مستودع استلام مختلفًا وفعالًا');
+ const event=String(body.request_id||'');if(!/^[0-9a-f-]{36}$/i.test(event))throw Error('معرف طلب الحركة مطلوب');
+ const fingerprint=hash({itemId,warehouseId,quantity,kind,reason,target,user});
+ const previous=db.prepare('SELECT request_hash FROM stock_movements WHERE event_id=? LIMIT 1').get(event);
+ if(previous){if(previous.request_hash!==fingerprint)throw Error('طلب الحركة مستخدم ببيانات مختلفة');return {event_id:event,replayed:true};}
+ if(kind==='opening'&&db.prepare('SELECT 1 FROM stock_movements WHERE item_id=? AND warehouse_id=?').get(itemId,warehouseId))throw Error('الرصيد الافتتاحي يسبق الحركات؛ استخدم تسوية بمرجع للتصحيح');
+ const insert=(warehouse,delta,type)=>db.prepare('INSERT INTO stock_movements(event_id,request_hash,item_id,warehouse_id,delta_micro,kind,reason,actor_id) VALUES(?,?,?,?,?,?,?,?)').run(event,fingerprint,itemId,warehouse,delta,type,reason,user);
+ if(kind==='transfer'){insert(warehouseId,-quantity,'transfer_out');insert(target,quantity,'transfer_in');}
+ else insert(warehouseId,['issue','adjust_out'].includes(kind)?-quantity:quantity,kind);
+ return {event_id:event,replayed:false};
+});}
+export function prepareItemLines(db,input,posId){const point=db.prepare('SELECT warehouse_id FROM pos_points WHERE id=?').get(posId||1);if(!point)throw Error('نقطة البيع غير موجودة');return input.map(row=>{
+ if(!row.item_id)return row;
+ const item=db.prepare('SELECT * FROM items WHERE id=? AND active=1').get(id(row.item_id));if(!item)throw Error('الصنف غير موجود أو موقوف');
+ const unit=row.item_unit_id?db.prepare('SELECT * FROM item_units WHERE id=? AND item_id=? AND active=1').get(id(row.item_unit_id),item.id):null;if(row.item_unit_id&&!unit)throw Error('وحدة الصنف غير موجودة أو موقوفة');
+ const factor=unit?.factor_micro||1000000;return {...row,item_id:item.id,unit_name:unit?.name||item.base_unit,unit_code:unit?.unit_code||item.unit_code,unit_factor_micro:factor,stock_qty_micro:item.track_stock?baseQuantity(row.qty,factor):0,warehouse_id:item.track_stock?point.warehouse_id:null};
+ });}
+export function postInvoiceStock(db,invoice){
+ if(invoice.document_code==='383')return; // Monetary debit adjustments do not imply a physical delivery.
+ const lines=db.prepare('SELECT * FROM invoice_lines WHERE invoice_id=?').all(invoice.id);
+ for(const line of lines){if(!line.item_id||!line.stock_qty_micro)continue;
+  const returning=invoice.type==='381';const quantity=line.stock_qty_micro;
+  if(returning){const original=db.prepare("SELECT delta_micro,warehouse_id,item_id FROM stock_movements WHERE invoice_id=? AND line_no=? AND kind='sale'").get(invoice.ref_invoice_id,line.line_no);if(!original||original.item_id!==line.item_id||original.warehouse_id!==line.warehouse_id)throw Error('لا توجد حركة بيع أصلية لإعادة هذه الكمية');}
+  const event='invoice:'+invoice.uuid+':'+line.line_no;
+  db.prepare('INSERT INTO stock_movements(event_id,request_hash,item_id,warehouse_id,delta_micro,kind,invoice_id,line_no,reason,actor_id) VALUES(?,?,?,?,?,?,?,?,?,?)').run(event,hash({invoice:invoice.uuid,line:line.line_no,quantity}),line.item_id,line.warehouse_id,returning?quantity:-quantity,returning?'return':'sale',invoice.id,line.line_no,returning?'مرتجع مرتبط بالفاتورة':'بيع صادر',invoice.created_by);
+ }
+}

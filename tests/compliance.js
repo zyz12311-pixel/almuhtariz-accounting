@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';import crypto from 'node:crypto';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
+import {openDb} from '../server/db.js';import {seedCompany,setSetting,createInvoice,createCreditNote,createDebitNote,getInvoice,issueInvoice,trialBalance,vatReport} from '../server/core.js';
+import {calculateLines,taxBreakdown} from '../server/money.js';import {verifyAudit} from '../server/audit.js';import {candidateHash} from '../server/zatca/xml.js';import {createTransport} from '../server/zatca/transport.js';
+const dir=fs.mkdtempSync(path.join(os.tmpdir(),'almuhtariz-compliance-')),db=openDb(path.join(dir,'test.db'));
+const company={name_ar:'منشأة اختبار',vat_number:'300000000000003',cr_number:'1234567890',street:'شارع الاختبار',building_number:'1234',district:'الاختبار',city:'الرياض',postal_code:'12345',country_code:'SA'};
+try{
+ seedCompany(db,company.name_ar);const lines=[{description:'خدمة <اختبار> & محاسبة',qty:2,unit_price:'100.00',vat_rate:15}];
+ const draft=createInvoice(db,1,{lines,draft:true});assert.throws(()=>issueInvoice(db,draft),/الرقم الضريبي|الشارع/);assert.equal(getInvoice(db,draft).status,'draft');
+ setSetting(db,'company',company);issueInvoice(db,draft);const inv=getInvoice(db,draft);assert.equal(inv.environment,'development');assert.equal(inv.invoice_kind,'simplified');
+ const xml=db.prepare('SELECT content FROM invoice_documents WHERE invoice_id=?').get(draft).content;assert.ok(xml.includes('0200000'));assert.ok(xml.includes('&lt;اختبار&gt; &amp;'));assert.ok(xml.includes('cac:TaxSubtotal'));assert.equal(db.prepare('SELECT state FROM regulatory_queue WHERE invoice_id=?').get(draft).state,'blocked');
+ assert.equal(candidateHash({invoice:inv,company:inv.company_snapshot,buyer:null,taxes:inv.tax_totals}),inv.hash);assert.ok(verifyAudit(db));
+ assert.throws(()=>db.prepare('UPDATE invoice_documents SET content=? WHERE invoice_id=?').run('tampered',draft));
+ assert.throws(()=>db.prepare('INSERT INTO journal_lines(entry_id,account_code,debit,credit) VALUES(1,?,?,?)').run('1101',1,0),/مقفل/);
+ assert.throws(()=>db.exec("UPDATE audit_events SET event='tampered'"));
+ const incomplete=db.prepare("INSERT INTO parties(name_ar,entity_type,vat_number) VALUES('عميل منشأة','business','399999999800003')").run().lastInsertRowid;
+ assert.throws(()=>createInvoice(db,1,{lines,party_id:incomplete,invoice_kind:'standard',supply_date:'2026-11-06'}),/عنوان العميل|الشارع/);
+ db.prepare('UPDATE parties SET street=?,building_number=?,district=?,city=?,postal_code=?,country_code=? WHERE id=?').run(company.street,company.building_number,company.district,company.city,company.postal_code,'SA',incomplete);
+ db.prepare('UPDATE parties SET vat_number=? WHERE id=?').run(company.vat_number,incomplete);assert.throws(()=>createInvoice(db,1,{lines,party_id:incomplete,invoice_kind:'standard',supply_date:'2026-11-06'}),/يختلف/);db.prepare('UPDATE parties SET vat_number=? WHERE id=?').run('399999999800003',incomplete);
+ const standard=createInvoice(db,1,{lines,party_id:incomplete,invoice_kind:'standard',supply_date:'2026-11-06'});assert.ok(db.prepare('SELECT content FROM invoice_documents WHERE invoice_id=?').get(standard).content.includes('0100000'));
+ const credit=createCreditNote(db,1,standard,{lines:[{line_no:1,qty:1}],reason:'تصحيح جزئي'});assert.equal(getInvoice(db,credit).document_code,'381');
+ const debit=createDebitNote(db,1,standard,{lines:[{description:'فرق خدمات',qty:1,unit_price:10}],reason:'إضافة خدمة'});assert.equal(getInvoice(db,debit).document_code,'383');assert.ok(db.prepare('SELECT content FROM invoice_documents WHERE invoice_id=?').get(debit).content.includes('>383</cbc:InvoiceTypeCode>'));assert.ok(trialBalance(db).balanced);
+ assert.throws(()=>calculateLines([{description:'غير صالح',qty:1,unit_price:'1.005'}]),/منازل عشرية/);
+ assert.throws(()=>calculateLines([{description:'غير صالح',qty:Infinity,unit_price:1}]));
+ assert.throws(()=>calculateLines([{description:'غير صالح',qty:1,unit_price:1,vat_rate:0}]),/النسبة الأساسية/);
+ assert.throws(()=>calculateLines([{description:'غير صالح',qty:1,unit_price:1,vat_rate:0,tax_category:'Z',exemption_code:'VATEX-SA-INVALID',exemption_reason:'x'}]));
+ const small=calculateLines(Array.from({length:3},()=>({description:'صغير',qty:1,unit_price:'.03',vat_rate:15})).map(x=>({...x,unit_price:'0.03'})));assert.equal(taxBreakdown(small)[0].vat,1);
+ const tiny=createInvoice(db,1,{lines:Array.from({length:3},()=>({description:'صغير',qty:1,unit_price:'0.03'}))});assert.equal(getInvoice(db,tiny).vat,1);assert.equal(getInvoice(db,tiny).total,10);assert.ok(trialBalance(db).balanced);
+ db.prepare("UPDATE compliance_state SET value=? WHERE key='last_issue_utc'").run(new Date(Date.now()+3600000).toISOString());assert.throws(()=>createInvoice(db,1,{lines}),/ساعة الجهاز/);db.prepare("DELETE FROM compliance_state WHERE key='last_issue_utc'").run();
+ setSetting(db,'compliance',{mode:'production'});assert.throws(()=>createInvoice(db,1,{lines}),/الإنتاج والمحاكاة مقفلان/);setSetting(db,'compliance',{mode:'development'});
+ assert.ok(verifyAudit(db));
+}finally{db.close();}
+let calls=0;const xml='<signed-test-fixture/>',digest=crypto.createHash('sha256').update(xml).digest('base64');const request={operation:'reporting',uuid:'test-fixture',invoiceHash:'test-fixture',xml,officialValidation:{passed:true,xmlSha256:digest}};
+assert.throws(()=>createTransport({environment:'production',binarySecurityToken:'fake',secret:'fake'}),/مقفل/);
+const transport=createTransport({binarySecurityToken:'fake',secret:'fake',fetchImpl:async()=>{calls++;return{status:200,json:async()=>({reportingStatus:'REPORTED',validationResults:{errorMessages:[],warningMessages:[]}})}}});
+await assert.rejects(()=>transport.submit({...request,officialValidation:{passed:false}}),/التحقق الرسمي/);assert.equal(calls,0);assert.equal((await transport.submit(request)).state,'accepted');
+const retry=createTransport({binarySecurityToken:'fake',secret:'fake',fetchImpl:async()=>({status:503,json:async()=>({})})});assert.equal((await retry.submit(request)).state,'retry');
+const ambiguous=createTransport({binarySecurityToken:'fake',secret:'fake',fetchImpl:async()=>({status:200,json:async()=>({})})});assert.equal((await ambiguous.submit(request)).state,'rejected');
+console.log('نجحت اختبارات التحقق المحلي وXML المرشح والسجل الثابت والتقريب والإشعارات ومنع الإنتاج؛ ردود النقل محاكاة اختبارية فقط');
+
+const {parseSdkResult}=await import('../server/zatca/sdk-result.js');
+const sdkOk=['XSD','EN','KSA','PIH'].map(c=>'['+c+'] validation result : PASSED').join('\n')+'\nGLOBAL VALIDATION RESULT = PASSED';
+assert.equal(parseSdkResult(sdkOk,{exitCode:0}).passed,true);assert.equal(parseSdkResult(sdkOk,{exitCode:1}).passed,false);assert.equal(parseSdkResult(sdkOk+'\n[QR] validation result : FAILED',{exitCode:0}).passed,false);assert.equal(parseSdkResult('GLOBAL VALIDATION RESULT = PASSED',{exitCode:0}).passed,false);assert.equal(parseSdkResult('unknown output',{exitCode:0}).passed,false);assert.equal(parseSdkResult(sdkOk.replace('= PASSED','= FAILED'),{exitCode:0}).passed,false);
