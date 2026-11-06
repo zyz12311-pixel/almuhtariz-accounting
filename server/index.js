@@ -18,6 +18,10 @@ import { appendAudit,verifyAudit } from './audit.js';
 import { createPosSale } from './pos.js';
 import {listItems,saveItem,posCatalog} from './items.js';
 import {recordStock} from './inventory.js';
+import {createPurchase,listPurchases,purchaseDetails,createVoucher,partyLedger,postManualJournal,validDate,financialReport} from './commercial.js';
+import {stockValuation} from './valuation.js';
+import {openShift,closeShift,shiftSummary,posReturn,createStocktake,approveStocktake} from './operations.js';
+import {syncInfo,configureSync,syncBranch} from './sync.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.join(here, '..', 'web');
@@ -32,8 +36,11 @@ export function createApp({ dbFile, licensePath }) {
   const need = (c, m) => { if (!c) throw new HttpError(400, m); };
   const isSetup = () => !!db.prepare('SELECT 1 FROM users').get();
 
-  const syncStatus = () => ({ mode: 'local', cloud_configured: false, pending: db.prepare('SELECT COUNT(*) n FROM sync_outbox o LEFT JOIN sync_receipts r ON r.event_id=o.event_id WHERE r.event_id IS NULL').get().n });
+  const syncStatus = () => ({ mode: 'local', cloud_configured:syncInfo(db).configured, ...syncInfo(db), pending: db.prepare('SELECT COUNT(*) n FROM sync_outbox o LEFT JOIN sync_receipts r ON r.event_id=o.event_id WHERE r.event_id IS NULL').get().n });
   route('GET', '/api/sync/status', () => syncStatus());
+  route('GET','/api/sync/config',()=>syncInfo(db),{owner:true});
+  route('PUT','/api/sync/config',({body})=>configureSync(db,body),{owner:true});
+  route('POST','/api/sync/run',()=>syncBranch(db),{owner:true,external:true});
 
   // ---------- المصادقة ----------
   route('GET', '/api/state', ({ user }) => ({ setup_needed: !isSetup(), user, license: lic(), today: nowRiyadh().date, sync: user && user.role!=='staff' ? syncStatus() : null, activity: user ? (user.role==='staff'?'trade':getSetting(db, 'company').activity) : '', installation_id: user ? db.prepare('SELECT id FROM installation LIMIT 1').get().id : null }), { open: true, cashier: true });
@@ -90,15 +97,37 @@ export function createApp({ dbFile, licensePath }) {
   route('POST','/api/parties',({body})=>{const data=partyData(body),keys=Object.keys(data);return{id:db.prepare('INSERT INTO parties('+keys.join(',')+') VALUES('+keys.map(()=>'?').join(',')+')').run(...keys.map(k=>data[k])).lastInsertRowid};});
   route('PUT','/api/parties/:id',({params,body})=>{need(db.prepare('SELECT 1 FROM parties WHERE id=?').get(params.id),'العميل غير موجود');const data=partyData(body),keys=Object.keys(data);db.prepare('UPDATE parties SET '+keys.map(k=>k+'=?').join(',')+' WHERE id=?').run(...keys.map(k=>data[k]),params.id);return{ok:true};});
   route('GET','/api/items',()=>listItems(db));
+  route('GET','/api/purchases',()=>listPurchases(db),{accountant:true});
+  route('GET','/api/purchases/:id',({params})=>purchaseDetails(db,params.id),{accountant:true});
+  route('POST','/api/purchases',({body,user})=>createPurchase(db,user.id,body),{accountant:true});
+  route('GET','/api/vouchers',()=>db.prepare('SELECT v.*,p.name_ar party FROM cash_vouchers v JOIN parties p ON p.id=v.party_id ORDER BY v.id DESC LIMIT 500').all().map(v=>({...v,amount:v.amount/100})),{accountant:true});
+  route('POST','/api/vouchers',({body,user})=>createVoucher(db,user.id,body),{accountant:true});
+  route('GET','/api/parties/:id/ledger',({params})=>partyLedger(db,Number(params.id)),{accountant:true});
+  route('GET','/api/accounts',()=>db.prepare('SELECT * FROM accounts ORDER BY code').all(),{accountant:true});
+  route('GET','/api/journals',()=>db.prepare('SELECT e.*,l.account_code,a.name_ar account,l.debit,l.credit,x.party_id,p.name_ar party FROM journal_entries e JOIN journal_lines l ON l.entry_id=e.id JOIN accounts a ON a.code=l.account_code LEFT JOIN journal_party_links x ON x.line_id=l.id LEFT JOIN parties p ON p.id=x.party_id ORDER BY e.id DESC,l.id LIMIT 2000').all().map(l=>({...l,debit:l.debit/100,credit:l.credit/100})),{accountant:true});
+  route('POST','/api/journals',({body,user})=>postManualJournal(db,user.id,body),{accountant:true});
+  route('GET','/api/accounting/lock',()=>db.prepare('SELECT * FROM accounting_locks WHERE id=1').get()||null,{owner:true});
+  route('POST','/api/accounting/lock',({body,user})=>{const date=validDate(body.closed_through),old=db.prepare('SELECT closed_through FROM accounting_locks WHERE id=1').get();need(!old||date>old.closed_through,'الإقفال يتقدم فقط ولا يعيد فتح الفترات');db.prepare('INSERT INTO accounting_locks(id,closed_through,actor_id) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET closed_through=excluded.closed_through,actor_id=excluded.actor_id,created_at=CURRENT_TIMESTAMP').run(date,user.id);return{ok:true};},{owner:true});
   route('POST','/api/items',({body,user})=>saveItem(db,body,null,user.id));
   route('PUT','/api/items/:id',({params,body,user})=>saveItem(db,body,Number(params.id),user.id));
   route('GET','/api/warehouses',()=>db.prepare('SELECT * FROM warehouses ORDER BY id').all());
+  route('GET','/api/inventory/valuation',()=>stockValuation(db),{accountant:true});
   route('POST','/api/warehouses',({body})=>{const name=String(body.name||'').trim();need(name&&name.length<=100,'اسم المستودع مطلوب');return {id:db.prepare('INSERT INTO warehouses(name) VALUES(?)').run(name).lastInsertRowid};},{owner:true});
   route('PUT','/api/pos/:id/warehouse',({params,body})=>{need(db.prepare('SELECT 1 FROM warehouses WHERE id=? AND active=1').get(body.warehouse_id),'اختر مستودعًا فعالًا');need(db.prepare('SELECT 1 FROM pos_points WHERE id=?').get(params.id),'نقطة البيع غير موجودة');db.prepare('UPDATE pos_points SET warehouse_id=? WHERE id=?').run(body.warehouse_id,params.id);return {ok:true};},{owner:true});
   route('GET','/api/inventory/balances',()=>db.prepare('SELECT i.id item_id,i.name_ar,i.base_unit,i.reorder_micro,w.id warehouse_id,w.name warehouse,COALESCE(SUM(m.delta_micro),0) qty_micro FROM items i CROSS JOIN warehouses w LEFT JOIN stock_movements m ON m.item_id=i.id AND m.warehouse_id=w.id WHERE i.track_stock=1 GROUP BY i.id,w.id ORDER BY i.name_ar,w.id').all().map(r=>({...r,qty:r.qty_micro/1000000,reorder_qty:r.reorder_micro/1000000})));
   route('GET','/api/inventory/movements',({query})=>{need(Number.isSafeInteger(Number(query.item_id))&&Number(query.item_id)>0,'اختر صنفًا');return db.prepare('SELECT m.*,w.name warehouse,i.number invoice_number FROM stock_movements m JOIN warehouses w ON w.id=m.warehouse_id LEFT JOIN invoices i ON i.id=m.invoice_id WHERE m.item_id=? ORDER BY m.id DESC LIMIT 300').all(Number(query.item_id)).map(r=>({...r,qty:r.delta_micro/1000000}));});
   route('POST','/api/inventory/movements',({body,user})=>recordStock(db,body,user.id));
   route('GET','/api/pos/catalog',()=>posCatalog(db),{cashier:true});
+  route('GET','/api/pos/shifts',({user})=>db.prepare('SELECT * FROM pos_shifts '+(user.role==='staff'?'WHERE user_id=? ':'')+'ORDER BY id DESC LIMIT 100').all(...(user.role==='staff'?[user.id]:[])).map(s=>shiftSummary(db,s)),{cashier:true});
+  route('POST','/api/pos/shifts',({body,user})=>openShift(db,user,body),{cashier:true});
+  route('POST','/api/pos/shifts/:id/close',({params,body,user})=>closeShift(db,user,params.id,body),{cashier:true});
+  route('POST','/api/pos/returns',({body,user})=>posReturn(db,user,body),{cashier:true});
+  route('GET','/api/pos/control',()=>getSetting(db,'pos_control'),{cashier:true});
+  route('GET','/api/stocktakes',()=>db.prepare('SELECT s.*,w.name warehouse FROM stocktakes s JOIN warehouses w ON w.id=s.warehouse_id ORDER BY s.id DESC LIMIT 100').all());
+  route('GET','/api/stocktakes/:id',({params})=>{const row=db.prepare('SELECT * FROM stocktakes WHERE id=?').get(params.id);need(row,'الجرد غير موجود');return{...row,lines:db.prepare('SELECT l.*,i.name_ar FROM stocktake_lines l JOIN items i ON i.id=l.item_id WHERE l.stocktake_id=?').all(row.id)};});
+  route('GET','/api/pos/history',({user})=>db.prepare("SELECT id,number,total,type,document_code FROM invoices WHERE status='issued' "+(user.role==='staff'?'AND created_by=? AND pos_id IN (SELECT pos_id FROM pos_user_access WHERE user_id=?) ':'')+'ORDER BY id DESC LIMIT 100').all(...(user.role==='staff'?[user.id,user.id]:[])),{cashier:true});
+  route('POST','/api/stocktakes',({body,user})=>createStocktake(db,user,body));
+  route('POST','/api/stocktakes/:id/approve',({params,user})=>approveStocktake(db,user,params.id),{owner:true});
   route('GET','/api/pos/customers',()=>db.prepare("SELECT id,name_ar FROM parties WHERE kind IN ('customer','both') ORDER BY name_ar").all(),{cashier:true});
   route('GET','/api/pos/points',({user})=>user.role==='staff'?db.prepare('SELECT p.* FROM pos_points p JOIN pos_user_access a ON a.pos_id=p.id WHERE a.user_id=? AND p.active=1 ORDER BY p.id').all(user.id):db.prepare('SELECT * FROM pos_points WHERE active=1 ORDER BY id').all(),{cashier:true});
   route('POST','/api/pos/sales',({user,body})=>({id:createPosSale(db,user,body)}),{cashier:true});
@@ -167,6 +196,7 @@ export function createApp({ dbFile, licensePath }) {
     return { month: m, invoices: t.n, sales: fromCents(t.sub), vat: fromCents(t.vat) };
   });
   route('GET', '/api/reports/trial-balance', () => trialBalance(db), { accountant: true });
+  route('GET','/api/reports/financial',({query})=>financialReport(db,query.from,query.to),{accountant:true});
   route('GET', '/api/reports/vat', ({ query }) => { need(/^\d{4}-\d{2}-\d{2}$/.test(query.from || '') && /^\d{4}-\d{2}-\d{2}$/.test(query.to || ''), 'حدد الفترة (from/to بصيغة YYYY-MM-DD)'); return vatReport(db, query.from, query.to); }, { accountant: true });
   route('GET', '/api/backup', () => {
     const f = path.join(os.tmpdir(), `smartz-${crypto.randomUUID()}.db`);
@@ -206,7 +236,11 @@ export function createApp({ dbFile, licensePath }) {
         body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
       }
       const context={db,req,body,params:{...r.re.exec(u.pathname).groups},query:Object.fromEntries(u.searchParams),user,token,ip};
-      const out=await (req.method==='GET'?r.fn(context):tx(db,()=>{const result=r.fn(context);appendAudit(db,{actor:user?.id||null,event:'api.'+req.method,entity_type:'api',entity_id:u.pathname,details:{fields:Object.keys(body).filter(k=>!/(password|secret|token|logo|csr|otp)/i.test(k)),result_id:result?.id||null}});return result;}));
+      const recordResult=result=>appendAudit(db,{actor:user?.id||null,event:'api.'+req.method,entity_type:'api',entity_id:u.pathname,details:{fields:Object.keys(body).filter(k=>!/(password|secret|token|logo|csr|otp)/i.test(k)),result_id:result?.id||null}});
+      let out;
+      if(req.method==='GET')out=await r.fn(context);
+      else if(r.external){out=await r.fn(context);tx(db,()=>recordResult(out));}
+      else out=tx(db,()=>{const result=r.fn(context);recordResult(result);return result;});
       if (out instanceof Raw) return send(200, out.body, out.type, out.headers);
       send(200, JSON.stringify(out));
     } catch (e) {
@@ -214,6 +248,7 @@ export function createApp({ dbFile, licensePath }) {
       send(st, JSON.stringify({ error: st >= 500 ? 'خطأ داخلي' : e.message }));
     }
   });
+  const syncTimer=setInterval(()=>{try{if(syncInfo(db).enabled)syncBranch(db).catch(()=>{});}catch{}},60000);syncTimer.unref();server.on('close',()=>clearInterval(syncTimer));
   return { server, db };
 }
 

@@ -1,0 +1,37 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import crypto from 'node:crypto';
+import {openDb} from '../server/db.js';import {seedCompany,trialBalance,setSetting,createInvoice} from '../server/core.js';
+import {saveItem} from '../server/items.js';import {balance} from '../server/inventory.js';import {nowRiyadh} from '../server/lib.js';
+import {createPurchase,purchaseDetails,createVoucher,partyLedger,postManualJournal} from '../server/commercial.js';
+const directory=fs.mkdtempSync(path.join(os.tmpdir(),'muhtariz-commercial-')),db=openDb(path.join(directory,'test.db'));
+const request=()=>crypto.randomUUID(),today=nowRiyadh().date;
+try{
+ db.exec("INSERT INTO users(id,username,pass,role) VALUES(1,'owner','fixture','owner');INSERT INTO parties(id,name_ar,kind) VALUES(1,'مورد','supplier'),(2,'عميل','customer');");seedCompany(db,'اختبار');
+ const item=saveItem(db,{name_ar:'صنف',unit_price:'20',track_stock:true,units:[{name:'كرتون',factor:12,unit_price:200}]},null,1).id;
+ const unit=db.prepare('SELECT id FROM item_units WHERE item_id=?').get(item).id;
+ const body={request_id:request(),supplier_id:1,supplier_reference:'INV-1',warehouse_id:1,payment:'credit',document_date:today,lines:[{item_id:item,item_unit_id:unit,qty:2,unit_price:120,vat_rate:15}]};
+ const purchase=createPurchase(db,1,body);assert.equal(balance(db,item,1),24000000);assert.equal(purchaseDetails(db,purchase.id).total,276);assert.equal(trialBalance(db).balanced,true);
+ assert.equal(createPurchase(db,1,body).id,purchase.id);assert.equal(balance(db,item,1),24000000);
+ assert.throws(()=>createPurchase(db,1,{...body,notes:'changed'}),/مختلفة/);
+ assert.throws(()=>createPurchase(db,1,{...body,request_id:request()}),/UNIQUE/);
+ assert.equal(partyLedger(db,1).reduce((s,l)=>s+l.credit-l.debit,0),276);
+ const voucher={request_id:request(),kind:'payment',party_id:1,voucher_date:today,amount:100,cash_account:'1101',notes:'دفعة مورد'};
+ createVoucher(db,1,voucher);createVoucher(db,1,voucher);assert.equal(db.prepare('SELECT COUNT(*) n FROM cash_vouchers').get().n,1);
+ assert.equal(partyLedger(db,1).reduce((s,l)=>s+l.credit-l.debit,0),176);
+ assert.throws(()=>createVoucher(db,1,{...voucher,request_id:request(),amount:177}),/المستحق/);
+ const returning={request_id:request(),kind:'return',ref_purchase_id:purchase.id,supplier_id:1,supplier_reference:'CN-1',warehouse_id:1,payment:'credit',document_date:today,reason:'مرتجع',lines:[{line_no:1,qty:0.5}]};
+ const ret=createPurchase(db,1,returning);assert.equal(purchaseDetails(db,ret.id).total,69);assert.equal(balance(db,item,1),18000000);
+ assert.throws(()=>createPurchase(db,1,{...returning,request_id:request(),lines:[{line_no:1,qty:2}]}),/المتبقي/);
+ assert.throws(()=>createPurchase(db,1,{...returning,request_id:request(),payment:'cash'}),/الأصلية/);
+ const snapshot=db.prepare('SELECT COUNT(*) n FROM purchases').get().n;
+ assert.throws(()=>createPurchase(db,1,{...body,request_id:request(),supplier_reference:'INV-2',document_date:'2026-02-30'}),/تاريخ/);assert.equal(db.prepare('SELECT COUNT(*) n FROM purchases').get().n,snapshot);
+ assert.throws(()=>db.exec('DELETE FROM purchases'),/ثابت/);assert.throws(()=>db.exec('UPDATE purchase_lines SET net=1'),/ثابت/);
+ const journal=postManualJournal(db,1,{request_id:request(),date:today,description:'رصيد افتتاحي عميل',lines:[{account:'1201',party_id:2,debit:'50'},{account:'3101',credit:'50'}]});assert.ok(journal.id);
+ assert.throws(()=>postManualJournal(db,1,{request_id:request(),date:today,description:'بدون طرف',lines:[{account:'1201',debit:'50'},{account:'3101',credit:'50'}]}),/الطرف/);
+ createVoucher(db,1,{request_id:request(),kind:'receipt',party_id:2,voucher_date:today,amount:'50',cash_account:'1102',notes:'تحصيل'});assert.equal(partyLedger(db,2).reduce((s,l)=>s+l.debit-l.credit,0),0);
+ db.prepare('INSERT INTO accounting_locks(id,closed_through,actor_id) VALUES(1,?,1)').run(today);
+ const before=balance(db,item,1),counts=db.prepare('SELECT COUNT(*) n FROM purchases').get().n;
+ assert.throws(()=>createPurchase(db,1,{...body,request_id:request(),supplier_reference:'LOCKED'}),/مقفلة/);assert.equal(balance(db,item,1),before);assert.equal(db.prepare('SELECT COUNT(*) n FROM purchases').get().n,counts);
+ assert.equal(trialBalance(db).balanced,true);
+ console.log('PASS: purchases, unit conversions, linked returns, supplier ledger, vouchers, idempotency, balanced journals, period-lock rollback');
+}finally{db.close();}

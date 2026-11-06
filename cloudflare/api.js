@@ -8,9 +8,11 @@ function config(env) {
   if (!/^(sb_publishable_[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_.-]+)$/.test(key)) throw new ApiError(503, 'قيمة SUPABASE_PUBLISHABLE_KEY غير صالحة. أدخل المفتاح العام نفسه دون اسم المتغير أو علامات اقتباس.');
   return { url: url.origin, key };
 }
-async function upstream(env, path, { token, method = 'GET', body } = {}) {
+async function upstream(env, path, { token, method = 'GET', body, admin=false } = {}) {
   const c = config(env); let response;
-  try { response = await fetch(c.url + path, { method, redirect: 'manual', signal: AbortSignal.timeout(12000), headers: { apikey: c.key, ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }); }
+  const key=admin?String(env.SUPABASE_SERVICE_ROLE_KEY||'').trim():c.key;
+  if(admin&&!/^(sb_secret_[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_.-]+)$/.test(key))throw new ApiError(503,'مفتاح الخدمة الخلفية غير مهيأ.');
+  try { response = await fetch(c.url + path, { method, redirect: 'manual', signal: AbortSignal.timeout(12000), headers: { apikey: key, ...(token ? { Authorization: 'Bearer ' + token } : admin&&key.startsWith('eyJ')?{Authorization:'Bearer '+key}:{}), ...(body ? { 'Content-Type': 'application/json',Prefer:'return=representation' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }); }
   catch (error) { const failure=new ApiError(503, 'تعذر الاتصال بالخدمة السحابية. حاول مجددًا.'); failure.code=error.name==='TimeoutError'?'UPSTREAM_TIMEOUT':'UPSTREAM_NETWORK_ERROR';throw failure; }
   if (!response.ok) {
     if ([400,401].includes(response.status)) throw new ApiError(401, 'تعذر تسجيل الدخول أو انتهت الجلسة. تحقق من البريد وكلمة المرور.');
@@ -27,11 +29,11 @@ function session(request) {
   return /^[a-zA-Z0-9._-]{1,3800}$/.test(value) ? value : null;
 }
 const cookie = (value, seconds) => `${COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${seconds}`;
-async function body(request) {
+async function body(request,max=16384) {
   if (!request.headers.get('Content-Type')?.startsWith('application/json')) throw new ApiError(415, 'الطلب يجب أن يكون JSON.');
   const reader = request.body?.getReader(); if (!reader) throw new ApiError(400, 'طلب غير صالح.');
   const chunks = []; let length = 0;
-  while (true) { const { done, value } = await reader.read(); if (done) break; length += value.length; if (length > 16384) { await reader.cancel(); throw new ApiError(413, 'الطلب أكبر من المسموح.'); } chunks.push(value); }
+  while (true) { const { done, value } = await reader.read(); if (done) break; length += value.length; if (length > max) { await reader.cancel(); throw new ApiError(413, 'الطلب أكبر من المسموح.'); } chunks.push(value); }
   try { const bytes = new Uint8Array(length); let offset = 0; for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; } const value = JSON.parse(new TextDecoder().decode(bytes)); if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error(); return value; }
   catch { throw new ApiError(400, 'طلب غير صالح.'); }
 }
@@ -46,7 +48,18 @@ export async function cloudApi(request, env) {
   const url = new URL(request.url), path = url.pathname;
   try {
     if (!['GET', 'POST'].includes(request.method)) throw new ApiError(405, 'طريقة الطلب غير مدعومة.');
-    if (request.method === 'POST' && request.headers.get('Origin') !== url.origin) throw new ApiError(403, 'مصدر الطلب غير مسموح.');
+    if (request.method === 'POST' && path!=='/api/sync/snapshot' && request.headers.get('Origin') !== url.origin) throw new ApiError(403, 'مصدر الطلب غير مسموح.');
+    if(path==='/api/sync/snapshot'&&request.method==='POST'){
+      const credential=(request.headers.get('Authorization')||'').match(/^Bearer ([0-9a-f-]{36})\.([A-Za-z0-9_-]{43})$/i);
+      if(!credential)throw new ApiError(401,'رمز جهاز غير صالح.');
+      const input=await body(request,4500000),snapshot=input.snapshot;
+      if(!Number.isSafeInteger(input.sequence)||input.sequence<1||snapshot?.installation_id!==credential[1]||snapshot.version!==1||!snapshot.tables||!Array.isArray(snapshot.tables.items)||!Array.isArray(snapshot.tables.invoices))throw new ApiError(400,'لقطة الفرع غير صالحة.');
+      const allowed=['items','warehouses','valuation','parties','invoices','purchases','vouchers','accounts','journal_entries','journal_lines','stock_movements','shifts'];
+      if(Object.keys(snapshot.tables).some(t=>!allowed.includes(t))||Object.keys(snapshot).some(k=>!['version','installation_id','captured_at','company','tables'].includes(k)))throw new ApiError(400,'اللقطة تحتوي بيانات غير مسموح بنقلها.');
+      const sha=async text=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text))),b=>b.toString(16).padStart(2,'0')).join('');
+      const result=await upstream(env,'/rest/v1/rpc/publish_branch_snapshot',{admin:true,method:'POST',body:{p_installation:credential[1],p_token_hash:await sha(credential[2]),p_sequence:input.sequence,p_payload_hash:await sha(JSON.stringify(snapshot)),p_payload:snapshot}});
+      return json(result);
+    }
     if (path === '/api/cloud/health' && request.method === 'GET') {
       await upstream(env, '/auth/v1/settings');
       return json({ connected: true, mode: 'cloud', sync_enabled: false });
@@ -74,6 +87,23 @@ export async function cloudApi(request, env) {
         return json({ mode: 'cloud', setup_needed: false, user: null, activity: '' }, 200, { 'Set-Cookie': cookie('', 0) });
       }
     }
+    if(path==='/api/cloud/devices'){
+      const {members}=await identity(env,token),input=request.method==='POST'?await body(request):{},org=input.organization_id||url.searchParams.get('organization_id')||members[0]?.organization_id;
+      if(!members.some(m=>m.organization_id===org&&m.role==='owner'))throw new ApiError(403,'ربط الأجهزة لمالك المنشأة فقط.');
+      const branches=await upstream(env,'/rest/v1/branches?select=id,name&organization_id=eq.'+encodeURIComponent(org),{token});
+      if(request.method==='GET'){
+        const devices=await upstream(env,'/rest/v1/branch_devices?select=id,active,created_at,last_sequence&organization_id=eq.'+encodeURIComponent(org),{admin:true});return json({branches,devices});
+      }
+      if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.installation_id||'')||!branches.some(b=>b.id===input.branch_id))throw new ApiError(400,'اختر الفرع وأدخل معرف النسخة المحلية الصحيح.');
+      const existing=await upstream(env,'/rest/v1/installations?select=id,organization_id,branch_id&id=eq.'+input.installation_id,{admin:true});
+      if(existing.length&&(!existing.some(i=>i.organization_id===org&&i.branch_id===input.branch_id)))throw new ApiError(409,'معرف النسخة مستخدم في فرع أو منشأة أخرى.');
+      const devices=await upstream(env,'/rest/v1/branch_devices?select=id&id=eq.'+input.installation_id,{admin:true});if(devices.length)throw new ApiError(409,'هذه النسخة مرتبطة مسبقًا. لا يُعاد عرض رمزها؛ يلزم مسار تدوير معتمد إن فُقد.');
+      if(!existing.length)await upstream(env,'/rest/v1/installations',{admin:true,method:'POST',body:{id:input.installation_id,organization_id:org,branch_id:input.branch_id}});
+      const secret=btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+      const tokenHash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(secret))),b=>b.toString(16).padStart(2,'0')).join('');
+      await upstream(env,'/rest/v1/branch_devices',{admin:true,method:'POST',body:{id:input.installation_id,organization_id:org,token_hash:tokenHash}});
+      return json({device_token:input.installation_id+'.'+secret,installation_id:input.installation_id});
+    }
     if (path === '/api/cloud/overview' && request.method === 'GET') {
       const { members } = await identity(env, token);
       const org = url.searchParams.get('organization_id') || members[0]?.organization_id;
@@ -88,6 +118,10 @@ export async function cloudApi(request, env) {
         read('invoices?select=id,number,status,document_code,issue_date,total&order=created_at.desc&limit=100'),
         read('parties?select=id,name_ar,kind&order=name_ar&limit=100')
       ]);
+      const snapshots=await upstream(env,'/rest/v1/branch_snapshots?select=installation_id,received_at,payload&organization_id=eq.'+encodeURIComponent(org)+'&order=received_at.desc&limit=20',{token});
+      const selected=url.searchParams.get('installation_id'),snapshot=selected?snapshots.find(s=>s.installation_id===selected):snapshots[0];
+      if(selected&&!snapshot)throw new ApiError(403,'نسخة الفرع غير متاحة لهذا الحساب.');
+      if(snapshot){const tables=snapshot.payload.tables;return json({role:member.role,organization_id:org,items:tables.items.filter(i=>i.active).slice(0,100).map(i=>({id:i.id,name_ar:i.name_ar,barcode:i.barcode,base_unit:i.base_unit,unit_price:Math.round(i.unit_price*100)})),invoices:tables.invoices.slice(-100).reverse(),parties:tables.parties.slice(0,100),organizations,read_only:true,snapshot:{installation_id:snapshot.installation_id,received_at:snapshot.received_at},branches:snapshots.map(s=>({id:s.installation_id,received_at:s.received_at}))});}
       return json({ role: member.role, organization_id: org, items, invoices, parties, organizations, read_only: true });
     }
     throw new ApiError(503, 'هذه العملية لم تُفعّل سحابيًا بعد. استخدم نسخة الفرع المحلية.');

@@ -2,6 +2,7 @@
 export const DEFAULTS = {
   company: { name_ar: '', name_en: '', vat_number: '', cr_number: '', address: '', phone: '', email: '', logo: '', activity: '', street: '', building_number: '', district: '', city: '', postal_code: '', country_code: 'SA', seller_id_scheme: 'CRN', seller_id: '' },
   compliance: { mode:'development' },
+  pos_control: {require_shift:false},
   ui: { theme: 'auto', accent: '#0f766e', fontScale: 1, density: 'comfortable', sidebar: 'right', radius: 10,
         font: 'system', calendar: 'gregorian', digits: 'latn' },
   invoice: { logo: '', logoPosition: 'right', logoSize: 90, headerText: '', headerAlign: 'right', title: 'فاتورة ضريبية',

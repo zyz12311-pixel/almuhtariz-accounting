@@ -40,12 +40,15 @@ export function seedCompany(db, companyName) {
 
 export const postEntry=(db,e)=>tx(db,()=>postEntryAtomic(db,e));
 function postEntryAtomic(db,e){
+  if(!Array.isArray(e.lines)||e.lines.length<2||e.lines.length>1000||e.lines.some(l=>![l.debit||0,l.credit||0].every(n=>Number.isSafeInteger(n)&&n>=0)||(l.debit&&l.credit)))throw Error('بنود القيد أو المبالغ غير صالحة');
+  const safeDebit=e.lines.reduce((s,l)=>s+BigInt(l.debit||0),0n),safeCredit=e.lines.reduce((s,l)=>s+BigInt(l.credit||0),0n);
+  if(safeDebit>BigInt(Number.MAX_SAFE_INTEGER)||safeCredit>BigInt(Number.MAX_SAFE_INTEGER))throw Error('إجمالي القيد أكبر من المسموح');
   const d = e.lines.reduce((s, l) => s + (l.debit || 0), 0), c = e.lines.reduce((s, l) => s + (l.credit || 0), 0);
   if (d !== c || d === 0 || e.lines.length < 2) throw new Error('القيد غير متوازن');
   const id = db.prepare('INSERT INTO journal_entries(entry_no,entry_date,description,source_type,source_id,branch_id) VALUES(?,?,?,?,?,?)')
     .run(nextCounter(db, 'entry'), e.date, e.description ?? null, e.source_type ?? null, e.source_id ?? null, e.branch_id ?? null).lastInsertRowid;
   const st = db.prepare('INSERT INTO journal_lines(entry_id,account_code,debit,credit) VALUES(?,?,?,?)');
-  for (const l of e.lines) {if(!Number.isSafeInteger(l.debit||0)||!Number.isSafeInteger(l.credit||0)||!db.prepare('SELECT 1 FROM accounts WHERE code=? AND postable=1').get(l.account))throw Error('حساب أو مبلغ القيد غير صالح');st.run(id,l.account,l.debit||0,l.credit||0);}
+  for (const l of e.lines) {if(!Number.isSafeInteger(l.debit||0)||!Number.isSafeInteger(l.credit||0)||!db.prepare('SELECT 1 FROM accounts WHERE code=? AND postable=1').get(l.account))throw Error('حساب أو مبلغ القيد غير صالح');const lineId=st.run(id,l.account,l.debit||0,l.credit||0).lastInsertRowid;if(l.party_id)db.prepare('INSERT INTO journal_party_links(line_id,party_id) VALUES(?,?)').run(lineId,l.party_id);}
   db.prepare('INSERT INTO journal_seals(entry_id) VALUES(?)').run(id);
   return id;
 }
@@ -86,7 +89,7 @@ function issueInvoiceAtomic(db, id) {
   db.prepare("INSERT INTO compliance_state(key,value) VALUES('last_issue_utc',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(new Date(now).toISOString());
   if (inv.payment === 'credit' && !party) throw new Error('اختر العميل لحفظ فاتورة آجلة');
   db.prepare('INSERT INTO invoice_snapshots(invoice_id,company,party) VALUES(?,?,?)').run(id, JSON.stringify(co), JSON.stringify(party));
-  postInvoiceStock(db,inv);
+  const stockCost=postInvoiceStock(db,inv);
   const number = `${pos.prefix}-${String(nextCounter(db, 'inv:' + pos.prefix)).padStart(6, '0')}`;
   let ch = db.prepare('SELECT * FROM chain WHERE branch_id=?').get(inv.branch_id);
   if (!ch) { db.prepare('INSERT INTO chain(branch_id,icv,last_hash) VALUES(?,0,?)').run(inv.branch_id, INIT_HASH); ch = { icv: 0, last_hash: INIT_HASH }; }
@@ -107,6 +110,7 @@ function issueInvoiceAtomic(db, id) {
   const side = (acc, amt, debit) => ({ account: acc, debit: debit ? amt : 0, credit: debit ? 0 : amt });
   const lines = [side(pay, inv.total, !cn), side(ACC.sales, inv.subtotal, cn)];
   if (inv.vat > 0) lines.push(side(ACC.vatOut, inv.vat, cn));
+  if(stockCost.cost>0){lines.push(side('5101',stockCost.cost,!cn),side('1401',stockCost.cost,cn));}
   postEntry(db, { date, description: `${cn ? 'إشعار دائن' : 'فاتورة'} ${number}`, source_type: 'invoice', source_id: id, branch_id: inv.branch_id, lines });
   appendAudit(db,{actor:inv.created_by,event:'invoice.issued.development',entity_type:'invoice',entity_id:id,details:{uuid:inv.uuid,number,document_code:inv.document_code,invoice_kind:inv.invoice_kind,hash,validation:'not_sdk_validated'}});
   const installation = db.prepare('SELECT id FROM installation LIMIT 1').get().id;

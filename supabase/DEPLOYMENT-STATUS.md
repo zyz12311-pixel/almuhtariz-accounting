@@ -13,3 +13,7 @@
 https://supabase.com/dashboard/project/tdpozajnzuaevtwmtrzo/sql/aa109ec6-d28d-4bf9-8a9e-8837bebbaaf8
 
 تنبيه للصيانة: التنفيذ يدوي عبر SQL Editor؛ لم يُسجل تاريخ الترحيلات بواسطة Supabase CLI. لا تشغّل db push لهذه الترحيلات على المشروع نفسه قبل مطابقة المخطط وتسوية migration history بأداة CLI. إعادة تنفيذ CREATE TABLE ستفشل لأن الجداول موجودة.
+
+## 2026-11-07 — استقبال لقطات الفروع
+
+طُبقت 20261107000600_branch_snapshots.sql عبر SQL Editor في معاملة واحدة؛ أصبح العدد 26 جدولًا. أضيف branch_devices وbranch_snapshots مع RLS ومنع وصول العملاء إلى بيانات رموز الأجهزة. نُفذ supabase/tests/snapshot_checks.sql على PostgreSQL ونجح: استقبال ذري، إعادة طلب ثابتة، رفض رمز خاطئ، رفض تعارض التسلسل، ومنع RPC عن authenticated. بيانات الاختبار تراجعت بـ ROLLBACK. لم يُربط جهاز حقيقي أو تُرفع بيانات فرع في هذا الاختبار. تنفيذ يدوي دون CLI migration history.

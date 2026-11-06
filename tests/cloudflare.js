@@ -13,6 +13,7 @@ globalThis.fetch=async(url,options)=>{
   if(url.includes('/organization_members?'))return Response.json([{organization_id:'org-one',role}]);
   if(url.includes('/items?'))return Response.json([{name_ar:'صنف',unit_price:1200}]);
   if(url.includes('/organizations?'))return Response.json([{id:'org-one',name_ar:'منشأة'}]);
+  if(url.includes('/branch_snapshots?'))return Response.json([]);
   if(url.includes('/invoices?')||url.includes('/parties?'))return Response.json([]);
   throw Error('Unexpected upstream '+url);
 };

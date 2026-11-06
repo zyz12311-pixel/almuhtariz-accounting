@@ -7,3 +7,7 @@ await import('./compliance.js');
 await import('./local-tools.js');
 await import('./inventory.js');
 await import('./cloudflare.js');
+await import('./commercial.js');
+await import('./valuation.js');
+await import('./operations.js');
+await import('./sync.js');

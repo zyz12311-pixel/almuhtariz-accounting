@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { createInvoice } from './core.js';
 import { tx } from './db.js';
 import {scaledInteger} from './money.js';
+import {activeShift} from './operations.js';
 export function normalizeBarcode(value) {
  if(value==null||value==='')return null;
  if(typeof value!=='string')throw Error('أدخل الباركود كنص للحفاظ على الأصفار في بدايته');
@@ -28,7 +29,8 @@ export function createPosSale(db,user,body) {
  return tx(db,()=>{
   const previous=db.prepare('SELECT * FROM pos_sale_requests WHERE request_id=?').get(key);
   if(previous){if(previous.user_id!==user.id){const e=Error('طلب بيع يخص مستخدمًا آخر');e.status=403;throw e;}if(previous.request_hash!==hash){const e=Error('هذا الطلب سبق إصداره ببيانات مختلفة؛ ابدأ سلة جديدة');e.status=409;throw e;}return previous.invoice_id;}
-  const sale=canonicalPosSale(db,user,body),id=createInvoice(db,user.id,sale);
+  const sale=canonicalPosSale(db,user,body),shift=activeShift(db,user,sale.pos_id),id=createInvoice(db,user.id,sale);
+  if(shift)db.prepare('INSERT INTO pos_shift_invoices(invoice_id,shift_id) VALUES(?,?)').run(id,shift.id);
   db.prepare('INSERT INTO pos_sale_requests VALUES(?,?,?,?,?,?)').run(key,user.id,sale.pos_id,id,hash,new Date().toISOString());return id;
  });
 }

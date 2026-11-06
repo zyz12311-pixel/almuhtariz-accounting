@@ -66,3 +66,6 @@ nav{width:250px;padding:28px 18px;display:flex;flex-direction:column;border-inli
 .cloud-heading{display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap}
 .cloud-workspace .card{padding:24px}.cloud-workspace .entry-brand img{width:64px;height:64px;object-fit:contain}
 @media(max-width:600px){.cloud-workspace{padding:16px}.cloud-workspace .card{padding:16px}}
+.commercial-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:16px;margin-bottom:20px}
+.shell>nav>a,.shell>nav>.brand,.shell>nav>.nav-bottom{flex-shrink:0}
+@media(min-width:801px){.shell>nav{overflow-y:auto;overscroll-behavior:contain}.shell>nav>a:not(.brand){min-height:44px}}
