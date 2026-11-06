@@ -4,12 +4,14 @@ const json = (body, status = 200, headers = {}) => Response.json(body, { status,
 function config(env) {
   const url = new URL(env.SUPABASE_URL || 'https://invalid.invalid');
   if (url.protocol !== 'https:' || !/^[a-z0-9]+\.supabase\.co$/.test(url.hostname) || url.username || url.password || url.port || url.pathname !== '/' || url.search || url.hash || !env.SUPABASE_PUBLISHABLE_KEY) throw new ApiError(503, 'إعدادات الاتصال السحابي غير مكتملة.');
-  return { url: url.origin, key: env.SUPABASE_PUBLISHABLE_KEY };
+  const key=String(env.SUPABASE_PUBLISHABLE_KEY).trim();
+  if (!/^(sb_publishable_[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_.-]+)$/.test(key)) throw new ApiError(503, 'قيمة SUPABASE_PUBLISHABLE_KEY غير صالحة. أدخل المفتاح العام نفسه دون اسم المتغير أو علامات اقتباس.');
+  return { url: url.origin, key };
 }
 async function upstream(env, path, { token, method = 'GET', body } = {}) {
   const c = config(env); let response;
   try { response = await fetch(c.url + path, { method, redirect: 'error', signal: AbortSignal.timeout(12000), headers: { apikey: c.key, ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }); }
-  catch { throw new ApiError(503, 'تعذر الاتصال بالخدمة السحابية. حاول مجددًا.'); }
+  catch (error) { const failure=new ApiError(503, 'تعذر الاتصال بالخدمة السحابية. حاول مجددًا.'); failure.code=error.name==='TimeoutError'?'UPSTREAM_TIMEOUT':'UPSTREAM_NETWORK_ERROR';throw failure; }
   if (!response.ok) {
     if ([400,401].includes(response.status)) throw new ApiError(401, 'تعذر تسجيل الدخول أو انتهت الجلسة. تحقق من البريد وكلمة المرور.');
     if (response.status === 403) throw new ApiError(403, 'لا توجد صلاحية لهذه العملية.');
@@ -90,6 +92,6 @@ export async function cloudApi(request, env) {
     }
     throw new ApiError(503, 'هذه العملية لم تُفعّل سحابيًا بعد. استخدم نسخة الفرع المحلية.');
   } catch (error) {
-    return json({ error: error instanceof ApiError ? error.message : 'تعذر إكمال الطلب.' }, error instanceof ApiError ? error.status : 500);
+    return json({ error: error instanceof ApiError ? error.message : 'تعذر إكمال الطلب.', ...(error.code ? {code:error.code} : {}) }, error instanceof ApiError ? error.status : 500);
   }
 }

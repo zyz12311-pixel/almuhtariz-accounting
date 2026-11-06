@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import worker from '../cloudflare/worker.js';
-const env={SUPABASE_URL:'https://example.supabase.co',SUPABASE_PUBLISHABLE_KEY:'public-test-key',SUPABASE_SERVICE_ROLE_KEY:'never-send-this',ASSETS:{fetch:async()=>new Response('asset')}};
+const env={SUPABASE_URL:'https://example.supabase.co',SUPABASE_PUBLISHABLE_KEY:'sb_publishable_test-key',SUPABASE_SERVICE_ROLE_KEY:'never-send-this',ASSETS:{fetch:async()=>new Response('asset')}};
 const realFetch=globalThis.fetch;
 let calls=[],role='owner',expired=false;
 globalThis.fetch=async(url,options)=>{
