@@ -10,7 +10,7 @@ function config(env) {
 }
 async function upstream(env, path, { token, method = 'GET', body } = {}) {
   const c = config(env); let response;
-  try { response = await fetch(c.url + path, { method, redirect: 'error', signal: AbortSignal.timeout(12000), headers: { apikey: c.key, ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }); }
+  try { response = await fetch(c.url + path, { method, redirect: 'manual', signal: AbortSignal.timeout(12000), headers: { apikey: c.key, ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }); }
   catch (error) { const failure=new ApiError(503, 'تعذر الاتصال بالخدمة السحابية. حاول مجددًا.'); failure.code=error.name==='TimeoutError'?'UPSTREAM_TIMEOUT':'UPSTREAM_NETWORK_ERROR';throw failure; }
   if (!response.ok) {
     if ([400,401].includes(response.status)) throw new ApiError(401, 'تعذر تسجيل الدخول أو انتهت الجلسة. تحقق من البريد وكلمة المرور.');
