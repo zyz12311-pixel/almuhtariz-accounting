@@ -275,4 +275,7 @@ async function route() { if(S.state?.user?.role==='staff'){workspace='trade';S.a
   if (sessionStorage.skipActivityOnce==='1') { S.activitySelected=true; delete sessionStorage.skipActivityOnce; }
   if (S.state.user) { S.ui = await api('preferences/ui'); applyUI(); }
   addEventListener('hashchange', route); route();
-})();
+})().catch(e => {
+  $('#app').innerHTML = `<main class="auth"><h1>المحترز للمحاسبة وإدارة الأعمال</h1><div class="msg" role="alert">${esc(e.message)}</div><button id="retry-start">إعادة المحاولة</button></main>`;
+  $('#retry-start').onclick = () => location.reload();
+});

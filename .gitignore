@@ -1,6 +1,7 @@
 data/
 tools/private.pem
 node_modules/
+.wrangler/
 *.db
 *.db-wal
 *.db-shm
