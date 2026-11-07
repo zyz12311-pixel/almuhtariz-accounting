@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import {pipeline} from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { openDb } from './db.js';
 import { hashPass, checkPass, toCents, fromCents, nowRiyadh } from './lib.js';
@@ -14,7 +15,8 @@ import { profileKey, validatePrintSettings, validateCompany } from './printing.j
 import { tx } from './db.js';
 import { validateIdentity } from './compliance.js';
 import { calculateLines } from './money.js';
-import { appendAudit,verifyAudit } from './audit.js';
+import { appendAudit } from './audit.js';
+import {maintenance} from './maintenance.js';
 import { createPosSale } from './pos.js';
 import {listItems,saveItem,posCatalog} from './items.js';
 import {recordStock} from './inventory.js';
@@ -29,10 +31,11 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.join(here, '..', 'web');
 class HttpError extends Error { constructor(s, m) { super(m); this.status = s; } }
 class Raw { constructor(body, type = 'text/html; charset=utf-8', headers = {}) { Object.assign(this, { body, type, headers }); } }
+class FileRaw {constructor(download,headers){Object.assign(this,{download,headers});}}
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
 export function createApp({ dbFile, licensePath }) {
-  const db = openDb(dbFile), fails = new Map(), routes = [];
+  const db = openDb(dbFile), fails = new Map(), routes = [], jobs=maintenance(dbFile);
   const lic = () => evaluate(licensePath, getSetting(db, 'company').vat_number);
   const route = (m, p, fn, o = {}) => routes.push({ m, re: new RegExp('^' + p.replace(/:(\w+)/g, '(?<$1>[^/]+)') + '$'), fn, ...o });
   const need = (c, m) => { if (!c) throw new HttpError(400, m); };
@@ -191,7 +194,7 @@ export function createApp({ dbFile, licensePath }) {
   }, { owner: true });
 
 
-  route('GET','/api/compliance/status',()=>({mode:getSetting(db,'compliance').mode,seller_errors:validateIdentity(getSetting(db,'company')),audit_valid:verifyAudit(db),production_ready:false,official_sdk_validated:false,certificate_configured:false,blocked:db.prepare("SELECT COUNT(*) n FROM regulatory_queue WHERE state='blocked'").get().n,remaining:['تنزيل SDK الرسمي وقبول شروطه وتشغيل التحقق','توليد CSR وتهيئة شهادة الجهاز وحماية مفتاحه','إكمال التوقيع XAdES وQR المرحلة الثانية والتحقق منهما','اختبار أنواع الفواتير والإشعارات في بيئة الهيئة','اعتماد إعداد الإنتاج بعد نجاح الاختبارات']}),{owner:true});
+  route('GET','/api/compliance/status',()=>({mode:getSetting(db,'compliance').mode,seller_errors:validateIdentity(getSetting(db,'company')),...jobs.auditStatus(db),production_ready:false,official_sdk_validated:false,certificate_configured:false,blocked:db.prepare("SELECT COUNT(*) n FROM regulatory_queue WHERE state='blocked'").get().n,remaining:['تنزيل SDK الرسمي وقبول شروطه وتشغيل التحقق','توليد CSR وتهيئة شهادة الجهاز وحماية مفتاحه','إكمال التوقيع XAdES وQR المرحلة الثانية والتحقق منهما','اختبار أنواع الفواتير والإشعارات في بيئة الهيئة','اعتماد إعداد الإنتاج بعد نجاح الاختبارات']}),{owner:true});
   route('GET','/api/compliance/queue',()=>db.prepare('SELECT q.*,i.number,i.invoice_kind,i.environment FROM regulatory_queue q JOIN invoices i ON i.id=q.invoice_id ORDER BY i.id DESC LIMIT 200').all(),{owner:true});
   route('GET','/api/compliance/audit',()=>db.prepare('SELECT id,actor_id,event,entity_type,entity_id,hash,created_at FROM audit_events ORDER BY id DESC LIMIT 100').all(),{owner:true});
   route('GET','/api/invoices/:id/xml',({params})=>{const d=db.prepare("SELECT content FROM invoice_documents WHERE invoice_id=? AND kind='xml_candidate'").get(params.id);need(d,'لا يوجد XML مؤرشف لهذا المستند');return new Raw(d.content,'application/xml; charset=utf-8',{'Content-Disposition':'attachment; filename="development-invoice-'+Number(params.id)+'.xml"'});},{accountant:true});
@@ -207,12 +210,8 @@ export function createApp({ dbFile, licensePath }) {
   route('GET', '/api/reports/trial-balance', () => trialBalance(db), { accountant: true });
   route('GET','/api/reports/financial',({query})=>financialReport(db,query.from,query.to),{accountant:true});
   route('GET', '/api/reports/vat', ({ query }) => { need(/^\d{4}-\d{2}-\d{2}$/.test(query.from || '') && /^\d{4}-\d{2}-\d{2}$/.test(query.to || ''), 'حدد الفترة (from/to بصيغة YYYY-MM-DD)'); return vatReport(db, query.from, query.to); }, { accountant: true });
-  route('GET', '/api/backup', () => {
-    const f = path.join(os.tmpdir(), `smartz-${crypto.randomUUID()}.db`);
-    db.exec(`VACUUM INTO '${f.replace(/'/g, "''")}'`);
-    const buf = fs.readFileSync(f); fs.unlinkSync(f);
-    return new Raw(buf, 'application/octet-stream', { 'Content-Disposition': `attachment; filename="smartz-backup-${new Date().toISOString().slice(0, 10)}.db"` });
-  }, { owner: true });
+  route('GET','/api/compliance/audit/verify',()=>jobs.audit(),{owner:true});
+  route('GET', '/api/backup', async () => new FileRaw(await jobs.backup(), { 'Content-Disposition': `attachment; filename="almuhtariz-backup-${new Date().toISOString().slice(0,10)}.db"` }), { owner: true });
   route('POST', '/api/license', ({ body }) => {
     need(fs.existsSync(PUB), 'لا يوجد مفتاح عام للترخيص في هذه النسخة');
     try { verifyLicenseFile(body, fs.readFileSync(PUB)); } catch { throw new HttpError(400, 'ملف الترخيص غير صالح'); }
@@ -226,8 +225,9 @@ export function createApp({ dbFile, licensePath }) {
       const u = new URL(req.url, 'http://x'), ip = req.socket.remoteAddress;
       if (!u.pathname.startsWith('/api/')) { // ملفات الواجهة
         let p = path.normalize(path.join(WEB, u.pathname === '/' ? 'index.html' : u.pathname));
-        if (!p.startsWith(WEB) || !fs.existsSync(p) || fs.statSync(p).isDirectory()) return send(404, 'غير موجود', 'text/plain; charset=utf-8');
-        return send(200, fs.readFileSync(p), MIME[path.extname(p)] || 'application/octet-stream');
+        if (!p.startsWith(WEB + path.sep)) return send(404, 'غير موجود', 'text/plain; charset=utf-8');
+        let content;try{content=await fs.promises.readFile(p);}catch(error){if(['ENOENT','EISDIR','ENOTDIR'].includes(error.code))return send(404,'غير موجود','text/plain; charset=utf-8');throw error;}
+        return send(200, content, MIME[path.extname(p)] || 'application/octet-stream');
       }
       const r = routes.find(x => x.m === req.method && x.re.test(u.pathname)); if (!r) throw new HttpError(404, 'مسار غير معروف');
       const cookie = Object.fromEntries((req.headers.cookie || '').split(';').map(c => c.trim().split('=')).filter(c => c[0]));
@@ -250,9 +250,11 @@ export function createApp({ dbFile, licensePath }) {
       if(req.method==='GET')out=await r.fn(context);
       else if(r.external){out=await r.fn(context);tx(db,()=>recordResult(out));}
       else out=tx(db,()=>{const result=r.fn(context);recordResult(result);return result;});
+      if(out instanceof FileRaw){try{res.writeHead(200,{'Content-Type':'application/octet-stream','Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...out.headers});await pipeline(fs.createReadStream(out.download.file),res);}finally{await out.download.dispose();}return;}
       if (out instanceof Raw) return send(200, out.body, out.type, out.headers);
       send(200, JSON.stringify(out));
     } catch (e) {
+      if(res.headersSent){res.destroy();return;}
       const st = e.status || 400;
       send(st, JSON.stringify({ error: st >= 500 ? 'خطأ داخلي' : e.message }));
     }

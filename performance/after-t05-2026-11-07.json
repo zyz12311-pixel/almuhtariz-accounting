@@ -1,0 +1,98 @@
+{
+  "created_at": "2026-11-07T01:06:24.084Z",
+  "node": "v26.13.0",
+  "source_fixture": "performance-R8DDly",
+  "source_kind": "synthetic materialized history; not fiscally valid invoices; one hot stock item plus 999 empty items; balanced ledger; real audit chain",
+  "fixtures": [
+    {
+      "history_rows": 1000,
+      "status": {
+        "heavy_ms": 16.385699999999815,
+        "bytes": 1131,
+        "state_successes": 8,
+        "state_p50_ms": 24.540899999999965,
+        "state_p95_ms": 35.16989999999987,
+        "failures": []
+      },
+      "audit": {
+        "heavy_ms": 84.2475000000004,
+        "bytes": 146,
+        "state_successes": 8,
+        "state_p50_ms": 47.72360000000026,
+        "state_p95_ms": 53.12910000000011,
+        "failures": []
+      },
+      "backup": {
+        "heavy_ms": 471.8860999999997,
+        "bytes": 1421312,
+        "state_successes": 8,
+        "state_p50_ms": 8.639899999999216,
+        "state_p95_ms": 14.925900000000183,
+        "failures": [],
+        "integrity": "ok",
+        "foreign_keys_ok": true,
+        "restored_stock_movements": 1000
+      }
+    },
+    {
+      "history_rows": 10000,
+      "status": {
+        "heavy_ms": 8.019399999990128,
+        "bytes": 1131,
+        "state_successes": 8,
+        "state_p50_ms": 14.883600000001024,
+        "state_p95_ms": 23.07740000000922,
+        "failures": []
+      },
+      "audit": {
+        "heavy_ms": 131.71689999999944,
+        "bytes": 147,
+        "state_successes": 8,
+        "state_p50_ms": 12.24210000000312,
+        "state_p95_ms": 18.978799999997136,
+        "failures": []
+      },
+      "backup": {
+        "heavy_ms": 1431.1068000000087,
+        "bytes": 8970240,
+        "state_successes": 8,
+        "state_p50_ms": 10.983600000006845,
+        "state_p95_ms": 16.853000000002794,
+        "failures": [],
+        "integrity": "ok",
+        "foreign_keys_ok": true,
+        "restored_stock_movements": 10000
+      }
+    },
+    {
+      "history_rows": 100000,
+      "status": {
+        "heavy_ms": 9.824200000002747,
+        "bytes": 1131,
+        "state_successes": 8,
+        "state_p50_ms": 16.12050000000454,
+        "state_p95_ms": 23.21140000000014,
+        "failures": []
+      },
+      "audit": {
+        "heavy_ms": 693.7540000000008,
+        "bytes": 148,
+        "state_successes": 8,
+        "state_p50_ms": 11.820800000001327,
+        "state_p95_ms": 20.658699999999953,
+        "failures": []
+      },
+      "backup": {
+        "heavy_ms": 6330.948299999989,
+        "bytes": 86470656,
+        "state_successes": 8,
+        "state_p50_ms": 9.673000000009779,
+        "state_p95_ms": 14.379500000010012,
+        "failures": [],
+        "integrity": "ok",
+        "foreign_keys_ok": true,
+        "restored_stock_movements": 100000
+      }
+    }
+  ]
+}

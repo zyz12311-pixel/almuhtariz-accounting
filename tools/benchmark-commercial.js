@@ -33,7 +33,7 @@ async function httpMetrics(file){
   const call=async route=>{const start=performance.now(),r=await fetch(base+route,{headers:{Cookie:cookie}}),data=await r.arrayBuffer();if(!r.ok)throw Error('HTTP benchmark failed '+route+' '+r.status);return{elapsed_ms:performance.now()-start,bytes:data.byteLength};};
   const baseline=[];for(let i=0;i<9;i++)baseline.push((await call('/api/state')).elapsed_ms);
   const concurrent=async route=>{const all=await Promise.allSettled([call(route),...Array.from({length:8},()=>call('/api/state'))]);const times=all.slice(1).filter(x=>x.status==='fulfilled').map(x=>x.value.elapsed_ms);return{heavy:all[0].status==='fulfilled'?all[0].value:{error:all[0].reason.message,code:all[0].reason.cause?.code},state_p50_ms:times.length?percentile(times,.5):null,state_p95_ms:times.length?percentile(times,.95):null,failures:all.map((x,i)=>x.status==='rejected'?{request:i,error:x.reason.message,code:x.reason.cause?.code}:null).filter(Boolean)};};
-  return{idle_state_p50_ms:percentile(baseline,.5),idle_state_p95_ms:percentile(baseline,.95),during_audit:await concurrent('/api/compliance/status'),during_backup:await concurrent('/api/backup')};
+  return{idle_state_p50_ms:percentile(baseline,.5),idle_state_p95_ms:percentile(baseline,.95),during_status:await concurrent('/api/compliance/status'),during_audit:await concurrent('/api/compliance/audit/verify'),during_backup:await concurrent('/api/backup')};
  }finally{worker.postMessage('close');await new Promise(resolve=>worker.once('exit',resolve));}
 }
 for(const n of sizes){

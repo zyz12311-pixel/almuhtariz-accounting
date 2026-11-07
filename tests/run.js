@@ -13,3 +13,4 @@ await import('./operations.js');
 await import('./sync.js');
 await import('./quotations.js');
 await import('./stock-positions.js');
+await import('./maintenance.js');
