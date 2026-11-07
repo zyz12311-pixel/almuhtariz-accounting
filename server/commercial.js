@@ -1,3 +1,4 @@
+import {insertStockMovement,trackingInput,movementTracking,remainingTracking} from './tracking.js';
 import crypto from 'node:crypto';
 import {tx} from './db.js';
 import {postEntry,nextCounter} from './core.js';
@@ -39,7 +40,7 @@ export function createPurchase(db,actor,body){return tx(db,()=>{
    const vat=last?old.vat-returned.vat:roundRatio(BigInt(old.vat)*BigInt(qty),BigInt(old.qty_micro));
    if(net>old.net-returned.net||vat>old.vat-returned.vat)throw Error('قيمة المرتجع أكبر من المتبقي');
    const stock=old.stock_qty_micro?baseQuantity(input.qty,old.unit_factor_micro):0;
-   return{...old,qty_micro:qty,stock_qty_micro:stock,net,vat};
+   return{...old,tracking:trackingInput(input.tracking),qty_micro:qty,stock_qty_micro:stock,net,vat};
   }
   const item=input.item_id?db.prepare('SELECT * FROM items WHERE id=? AND active=1').get(identifier(input.item_id)):null;
   if(input.item_id&&!item)throw Error('الصنف غير موجود أو موقوف');
@@ -53,14 +54,14 @@ export function createPurchase(db,actor,body){return tx(db,()=>{
   if(![0,1500].includes(rate))throw Error('نسبة ضريبة الشراء المدعومة 0 أو 15');
   const net=roundRatio(BigInt(qty)*BigInt(price),1000000n),vat=roundRatio(BigInt(net)*BigInt(rate),10000n);
   if(!Number.isSafeInteger(net)||!Number.isSafeInteger(vat)||!Number.isSafeInteger(net+vat))throw Error('قيمة البند أكبر من المسموح');
-  return{line_no:index+1,item_id:item?.id||null,description:text(input.description||item?.name_ar,500,'الوصف',true),qty_micro:qty,unit_price:price,vat_rate:rate,net,vat,unit_name:unit?.name||item?.base_unit||'خدمة',unit_factor_micro:factor,stock_qty_micro:stock,account_code:account};
+  return{line_no:index+1,tracking:trackingInput(input.tracking),item_id:item?.id||null,description:text(input.description||item?.name_ar,500,'الوصف',true),qty_micro:qty,unit_price:price,vat_rate:rate,net,vat,unit_name:unit?.name||item?.base_unit||'خدمة',unit_factor_micro:factor,stock_qty_micro:stock,account_code:account};
  });
  const subtotal=addSafe(lines.map(l=>l.net)),vat=addSafe(lines.map(l=>l.vat)),total=addSafe([subtotal,vat]);if(!total)throw Error('قيمة الشراء يجب أن تكون أكبر من صفر');
  const number=(returning?'PR-':'PU-')+String(nextCounter(db,'purchase')).padStart(6,'0');
  const id=Number(db.prepare('INSERT INTO purchases(uuid,number,kind,supplier_id,supplier_reference,document_date,warehouse_id,payment,ref_purchase_id,subtotal,vat,total,reason,notes,created_by,request_id,request_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(crypto.randomUUID(),number,returning?'return':'purchase',supplier.id,reference,date,warehouse,payment,original?.id||null,subtotal,vat,total,reason,notes,actor,rec.request,rec.hash).lastInsertRowid);
  db.prepare('INSERT INTO purchase_snapshots(purchase_id,supplier) VALUES(?,?)').run(id,JSON.stringify(supplier));
- for(const l of lines){db.prepare('INSERT INTO purchase_lines(purchase_id,line_no,item_id,description,qty_micro,unit_price,vat_rate,net,vat,unit_name,unit_factor_micro,stock_qty_micro,account_code) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,l.line_no,l.item_id,l.description,l.qty_micro,l.unit_price,l.vat_rate,l.net,l.vat,l.unit_name,l.unit_factor_micro,l.stock_qty_micro,l.account_code);
-  if(l.stock_qty_micro){const movement=Number(db.prepare('INSERT INTO stock_movements(event_id,request_hash,item_id,warehouse_id,delta_micro,kind,purchase_id,line_no,reason,actor_id) VALUES(?,?,?,?,?,?,?,?,?,?)').run('purchase:'+id+':'+l.line_no,rec.hash,l.item_id,warehouse,(returning?-1:1)*l.stock_qty_micro,returning?'issue':'receipt',id,l.line_no,number,actor).lastInsertRowid);l.stock_value=valueMovement(db,movement,{value:l.net}).value;}
+ for(const l of lines){db.prepare('INSERT INTO purchase_lines(purchase_id,line_no,item_id,description,qty_micro,unit_price,vat_rate,net,vat,unit_name,unit_factor_micro,stock_qty_micro,account_code,tracking_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,l.line_no,l.item_id,l.description,l.qty_micro,l.unit_price,l.vat_rate,l.net,l.vat,l.unit_name,l.unit_factor_micro,l.stock_qty_micro,l.account_code,JSON.stringify(l.tracking||[]));
+  if(l.stock_qty_micro){const originalMovement=returning?db.prepare('SELECT id FROM stock_movements WHERE purchase_id=? AND line_no=?').get(original.id,l.line_no):null;const movement=insertStockMovement(db,{event_id:'purchase:'+id+':'+l.line_no,request_hash:rec.hash,item_id:l.item_id,warehouse_id:warehouse,delta_micro:(returning?-1:1)*l.stock_qty_micro,kind:returning?'issue':'receipt',purchase_id:id,line_no:l.line_no,reason:number,actor_id:actor},{tracking:l.tracking,originalMovementId:originalMovement?.id||null});l.stock_value=valueMovement(db,movement,{value:l.net}).value;}
  }
  const settlement={cash:'1101',bank:'1102',credit:'2101'}[payment],entries=lines.filter(l=>l.net||l.stock_value).map(l=>({account:l.account_code,[returning?'credit':'debit']:returning&&l.stock_qty_micro?l.stock_value:l.net}));
  if(returning){const difference=lines.filter(l=>l.stock_qty_micro).reduce((s,l)=>s+l.net-l.stock_value,0);if(difference)entries.push({account:'5298',[difference>0?'credit':'debit']:Math.abs(difference)});}
@@ -71,7 +72,7 @@ export function createPurchase(db,actor,body){return tx(db,()=>{
  return{id,replayed:false};
 });}
 export function listPurchases(db){return db.prepare('SELECT p.*,s.name_ar supplier FROM purchases p JOIN parties s ON s.id=p.supplier_id ORDER BY p.id DESC').all().map(p=>({...p,subtotal:p.subtotal/100,vat:p.vat/100,total:p.total/100}));}
-export function purchaseDetails(db,id){const p=db.prepare('SELECT p.*,s.name_ar supplier FROM purchases p JOIN parties s ON s.id=p.supplier_id WHERE p.id=?').get(identifier(id));if(!p)throw Error('مستند الشراء غير موجود');return{...p,subtotal:p.subtotal/100,vat:p.vat/100,total:p.total/100,lines:db.prepare('SELECT * FROM purchase_lines WHERE purchase_id=? ORDER BY line_no').all(p.id).map(l=>({...l,qty:l.qty_micro/1000000,unit_price:l.unit_price/100,vat_rate:l.vat_rate/100,net:l.net/100,vat:l.vat/100,remaining_qty:(l.qty_micro-db.prepare("SELECT COALESCE(SUM(l.qty_micro),0) n FROM purchase_lines l JOIN purchases r ON r.id=l.purchase_id WHERE r.kind='return' AND r.ref_purchase_id=? AND l.line_no=?").get(p.id,l.line_no).n)/1000000}))};}
+export function purchaseDetails(db,id){const p=db.prepare('SELECT p.*,s.name_ar supplier FROM purchases p JOIN parties s ON s.id=p.supplier_id WHERE p.id=?').get(identifier(id));if(!p)throw Error('مستند الشراء غير موجود');return{...p,subtotal:p.subtotal/100,vat:p.vat/100,total:p.total/100,lines:db.prepare('SELECT * FROM purchase_lines WHERE purchase_id=? ORDER BY line_no').all(p.id).map(l=>({...l,tracking_mode:l.item_id?db.prepare('SELECT tracking_mode FROM items WHERE id=?').get(l.item_id)?.tracking_mode||'none':'none',tracking:(()=>{const m=db.prepare('SELECT id FROM stock_movements WHERE purchase_id=? AND line_no=?').get(p.id,l.line_no);return m?movementTracking(db,m.id):[];})(),tracking_remaining:(()=>{const m=db.prepare('SELECT id FROM stock_movements WHERE purchase_id=? AND line_no=?').get(p.id,l.line_no);return m?remainingTracking(db,m.id):[];})(),qty:l.qty_micro/1000000,unit_price:l.unit_price/100,vat_rate:l.vat_rate/100,net:l.net/100,vat:l.vat/100,remaining_qty:(l.qty_micro-db.prepare("SELECT COALESCE(SUM(l.qty_micro),0) n FROM purchase_lines l JOIN purchases r ON r.id=l.purchase_id WHERE r.kind='return' AND r.ref_purchase_id=? AND l.line_no=?").get(p.id,l.line_no).n)/1000000}))};}
 export function partyLedger(db,id){
  identifier(id);return db.prepare(`SELECT e.entry_date,e.entry_no,e.description,l.account_code,l.debit,l.credit FROM journal_lines l JOIN journal_entries e ON e.id=l.entry_id LEFT JOIN journal_party_links x ON x.line_id=l.id LEFT JOIN invoices i ON e.source_type='invoice' AND i.id=e.source_id WHERE x.party_id=? OR (x.party_id IS NULL AND i.party_id=? AND l.account_code='1201') ORDER BY e.entry_date,e.id,l.id`).all(id,id).map(l=>({...l,debit:l.debit/100,credit:l.credit/100}));
 }

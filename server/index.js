@@ -27,6 +27,7 @@ import {syncInfo,configureSync,syncBranch} from './sync.js';
 import {createQuotation,quotation,convertQuotation,cancelQuotation} from './quotations.js';
 import {commercialPrint} from './commercial-print.js';
 import {commercialList,shiftList,complianceList,posHistoryList} from './lists.js';
+import {traceList} from './tracking.js';
 import {correctLegacyCost} from './cost-correction.js';
 import {allocateVoucher,voucherDetails,outstandingDocuments,reverseManualJournal} from './settlements.js';
 
@@ -138,6 +139,8 @@ export function createApp({ dbFile, licensePath }) {
   route('GET','/api/inventory/balances',({query})=>db.prepare('SELECT i.id item_id,i.name_ar,i.base_unit,i.reorder_micro,w.id warehouse_id,w.name warehouse,COALESCE(m.qty_micro,0) qty_micro FROM items i CROSS JOIN warehouses w LEFT JOIN stock_positions m ON m.item_id=i.id AND m.warehouse_id=w.id WHERE i.track_stock=1 AND (? IS NULL OR i.id=?) ORDER BY i.name_ar,w.id').all(query.item_id?Number(query.item_id):null,query.item_id?Number(query.item_id):null).map(r=>({...r,qty:r.qty_micro/1000000,reorder_qty:r.reorder_micro/1000000})));
   route('GET','/api/inventory/movements',({query})=>{need(Number.isSafeInteger(Number(query.item_id))&&Number(query.item_id)>0,'اختر صنفًا');return db.prepare('SELECT m.*,w.name warehouse,i.number invoice_number FROM stock_movements m JOIN warehouses w ON w.id=m.warehouse_id LEFT JOIN invoices i ON i.id=m.invoice_id WHERE m.item_id=? ORDER BY m.id DESC').all(Number(query.item_id)).map(r=>({...r,qty:r.delta_micro/1000000}));});
   route('POST','/api/inventory/movements',({body,user})=>recordStock(db,body,user.id));
+  route('GET','/api/inventory/traces',({query})=>traceList(db,query.item_id,query.warehouse_id,query),{accountant:true});
+  route('GET','/api/pos/traces',({query,user})=>{const point=db.prepare('SELECT warehouse_id FROM pos_points WHERE id=? AND active=1').get(Number(query.pos_id));need(point,'نقطة بيع غير صالحة');if(user.role==='staff'&&!db.prepare('SELECT 1 FROM pos_user_access WHERE user_id=? AND pos_id=?').get(user.id,Number(query.pos_id)))throw new HttpError(403,'نقطة البيع غير مسموحة');return traceList(db,query.item_id,point.warehouse_id,query,true);},{cashier:true});
   route('GET','/api/pos/catalog',()=>posCatalog(db),{cashier:true});
   route('GET','/api/pos/shifts',({user})=>db.prepare('SELECT * FROM pos_shifts '+(user.role==='staff'?'WHERE user_id=? ':'')+'ORDER BY id DESC').all(...(user.role==='staff'?[user.id]:[])).map(s=>shiftSummary(db,s)),{cashier:true});
   route('POST','/api/pos/shifts',({body,user})=>openShift(db,user,body),{cashier:true});

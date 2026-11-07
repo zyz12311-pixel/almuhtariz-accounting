@@ -18,3 +18,4 @@ await import('./paging.js');
 await import('./settlements.js');
 await import('./settlements-upgrade.js');
 await import('./cost-correction.js');
+await import('./tracking.js');

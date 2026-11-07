@@ -1,3 +1,4 @@
+import {prepareTrackingCount,trackingCountAdjustments,fixedQuantity} from './tracking-counts.js';
 import crypto from 'node:crypto';import {tx} from './db.js';import {scaledInteger} from './money.js';import {getSetting,createCreditNote} from './core.js';import {balance,recordStock} from './inventory.js';import {appendAudit} from './audit.js';
 const fail=message=>{const e=Error(message);e.status=403;throw e;};
 const id=value=>{const n=Number(value);if(!Number.isSafeInteger(n)||n<1)throw Error('معرف غير صالح');return n;};
@@ -41,16 +42,27 @@ export function createStocktake(db,user,body){return tx(db,()=>{
  if(old){if(old.request_hash!==fingerprint)throw Error('معرف الجرد مستخدم ببيانات مختلفة');return{id:old.id,replayed:true};}
  const warehouse=id(body.warehouse_id);if(!db.prepare('SELECT 1 FROM warehouses WHERE id=? AND active=1').get(warehouse))throw Error('اختر مستودعًا فعالًا');
  const notes=String(body.notes||'').trim();if(!notes||notes.length>500||!Array.isArray(body.lines)||!body.lines.length||body.lines.length>1000)throw Error('بيان الجرد وبنوده مطلوبان (حتى 1000 صنف)');
- const seen=new Set(),lines=body.lines.map(l=>{const item=id(l.item_id);if(seen.has(item)||!db.prepare("SELECT 1 FROM items WHERE id=? AND active=1 AND track_stock=1").get(item))throw Error('صنف الجرد غير صالح أو مكرر');seen.add(item);return{item,expected:balance(db,item,warehouse),counted:Number(scaledInteger(l.counted_qty,6,'كمية الجرد')),cost:l.unit_cost==null||l.unit_cost===''?null:Number(scaledInteger(l.unit_cost,2,'التكلفة'))};});
+ const seen=new Set(),lines=body.lines.map(l=>{
+  const item=db.prepare('SELECT * FROM items WHERE id=? AND active=1 AND track_stock=1').get(id(l.item_id));if(!item||seen.has(item.id))throw Error('صنف الجرد غير صالح أو مكرر');seen.add(item.id);
+  const position=db.prepare('SELECT qty_micro,last_movement_id FROM stock_positions WHERE item_id=? AND warehouse_id=?').get(item.id,warehouse),expected=position?.qty_micro||0;
+  const traced=item.tracking_mode!=='none'?prepareTrackingCount(db,item,warehouse,l.tracking_counts):null;if(!traced&&l.tracking_counts?.length)throw Error('الصنف ليس متتبعًا');
+  const counted=traced?traced.counted:Number(scaledInteger(l.counted_qty,6,'كمية الجرد'));if(traced&&l.counted_qty!==undefined&&l.counted_qty!==''&&Number(scaledInteger(l.counted_qty,6))!==counted)throw Error('إجمالي الجرد لا يطابق الهويات المعدودة');
+  return{item:item.id,expected,counted,last:position?.last_movement_id||0,counts:traced?.counts||[],cost:l.unit_cost==null||l.unit_cost===''?null:Number(scaledInteger(l.unit_cost,2,'التكلفة'))};
+ });
  const stocktake=Number(db.prepare('INSERT INTO stocktakes(warehouse_id,notes,created_by,request_id,request_hash) VALUES(?,?,?,?,?)').run(warehouse,notes,user.id,key,fingerprint).lastInsertRowid);
- for(const l of lines)db.prepare('INSERT INTO stocktake_lines VALUES(?,?,?,?,?)').run(stocktake,l.item,l.expected,l.counted,l.cost);
+ for(const l of lines)db.prepare('INSERT INTO stocktake_lines(stocktake_id,item_id,expected_micro,counted_micro,unit_cost,expected_movement_id,tracking_counts) VALUES(?,?,?,?,?,?,?)').run(stocktake,l.item,l.expected,l.counted,l.cost,l.last,JSON.stringify(l.counts));
  appendAudit(db,{actor:user.id,event:'stocktake.created',entity_type:'stocktake',entity_id:stocktake,details:{warehouse,count:lines.length}});return{id:stocktake,replayed:false};
 });}
 export function approveStocktake(db,user,stocktakeId){return tx(db,()=>{
  if(user.role!=='owner')fail('اعتماد الجرد للمالك فقط');const draft=db.prepare('SELECT * FROM stocktakes WHERE id=?').get(id(stocktakeId));if(!draft)throw Error('الجرد غير موجود');if(draft.status==='approved')return{id:draft.id,replayed:true};
  const lines=db.prepare('SELECT * FROM stocktake_lines WHERE stocktake_id=? ORDER BY item_id').all(draft.id);
- for(const l of lines){if(balance(db,l.item_id,draft.warehouse_id)!==l.expected_micro)throw Error('تغير رصيد صنف منذ بدء الجرد. أعد الجرد قبل الاعتماد');const difference=l.counted_micro-l.expected_micro;if(!difference)continue;
-  recordStock(db,{request_id:crypto.randomUUID(),item_id:l.item_id,warehouse_id:draft.warehouse_id,kind:difference>0?'adjust_in':'adjust_out',qty:(Math.abs(difference)/1000000).toFixed(6),...(l.unit_cost===null?{}:{unit_cost:(l.unit_cost/100).toFixed(2)}),reason:'اعتماد جرد #'+draft.id+' · '+draft.notes},user.id);
+ for(const l of lines){
+  const position=db.prepare('SELECT qty_micro,last_movement_id FROM stock_positions WHERE item_id=? AND warehouse_id=?').get(l.item_id,draft.warehouse_id);
+  if(l.expected_movement_id===null)throw Error('هذه مسودة جرد قديمة؛ أعد العد قبل الاعتماد');
+  if((position?.qty_micro||0)!==l.expected_micro||(position?.last_movement_id||0)!==l.expected_movement_id)throw Error('تغير رصيد صنف أو حركته منذ بدء الجرد. أعد الجرد قبل الاعتماد');
+  const tracked=db.prepare('SELECT tracking_mode FROM items WHERE id=?').get(l.item_id).tracking_mode!=='none',difference=l.counted_micro-l.expected_micro,counts=JSON.parse(l.tracking_counts);
+  const adjustments=tracked?trackingCountAdjustments(db,l.item_id,draft.warehouse_id,counts):(difference?[{kind:difference>0?'adjust_in':'adjust_out',qty:fixedQuantity(Math.abs(difference)),tracking:[]}]:[]);
+  for(const change of adjustments)recordStock(db,{request_id:crypto.randomUUID(),item_id:l.item_id,warehouse_id:draft.warehouse_id,...change,...(l.unit_cost===null?{}:{unit_cost:fixedQuantity(l.unit_cost,2)}),reason:'اعتماد جرد #'+draft.id+' · '+draft.notes},user.id);
  }
  db.prepare("UPDATE stocktakes SET status='approved',approved_by=?,approved_at=? WHERE id=?").run(user.id,new Date().toISOString(),draft.id);
  appendAudit(db,{actor:user.id,event:'stocktake.approved',entity_type:'stocktake',entity_id:draft.id,details:{lines:lines.length}});return{id:draft.id,replayed:false};

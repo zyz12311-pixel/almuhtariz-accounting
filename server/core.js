@@ -1,3 +1,4 @@
+import {trackingInput,movementTracking,remainingTracking} from './tracking.js';
 import crypto from 'node:crypto';
 import { tx } from './db.js';
 import { toCents, fromCents, tlv, sha256b64, nowRiyadh } from './lib.js';
@@ -53,7 +54,7 @@ function postEntryAtomic(db,e){
   return id;
 }
 
-const calcLines=input=>calculateLines(input).map((line,i)=>({...line,item_id:input[i].item_id||null,stock_qty_micro:input[i].stock_qty_micro||0,unit_factor_micro:input[i].unit_factor_micro||1000000,unit_name:input[i].unit_name||'',warehouse_id:input[i].warehouse_id||null}));
+const calcLines=input=>calculateLines(input).map((line,i)=>({...line,item_id:input[i].item_id||null,stock_qty_micro:input[i].stock_qty_micro||0,unit_factor_micro:input[i].unit_factor_micro||1000000,unit_name:input[i].unit_name||'',warehouse_id:input[i].warehouse_id||null,tracking:trackingInput(input[i].tracking)}));
 function insertInvoice(db, o) {
   const taxes=taxBreakdown(o.lines),sub=sumCents(o.lines.map(l=>l.net)),vat=sumCents(taxes.map(g=>g.vat));
   if(!Number.isSafeInteger(sub+vat))throw Error('قيمة الفاتورة أكبر من المسموح');
@@ -67,8 +68,8 @@ function insertInvoice(db, o) {
   const kind=o.invoice_kind||(party&&(party.vat_number||party.entity_type==='business')?'standard':'simplified');
   if(!['standard','simplified'].includes(kind))throw Error('نوع الفاتورة غير صالح');
   db.prepare('UPDATE invoices SET invoice_kind=?,document_code=?,supply_date=?,environment=? WHERE id=?').run(kind,o.document_code||o.type,o.supply_date||null,'development',id);
-  const st=db.prepare('INSERT INTO invoice_lines(invoice_id,line_no,description,qty,unit_price,vat_rate,net,vat,total,tax_category,exemption_code,exemption_reason,unit_code,item_id,stock_qty_micro,unit_factor_micro,unit_name,warehouse_id,list_price,discount_rate) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-  for(const l of o.lines)st.run(id,l.line_no,l.description,l.qty,l.unit_price,l.vat_rate,l.net,l.vat,l.total,l.tax_category,l.exemption_code,l.exemption_reason,l.unit_code,l.item_id||null,l.stock_qty_micro||0,l.unit_factor_micro||1000000,l.unit_name||'',l.warehouse_id||null,l.list_price??l.unit_price,l.discount_rate||0);
+  const st=db.prepare('INSERT INTO invoice_lines(invoice_id,line_no,description,qty,unit_price,vat_rate,net,vat,total,tax_category,exemption_code,exemption_reason,unit_code,item_id,stock_qty_micro,unit_factor_micro,unit_name,warehouse_id,list_price,discount_rate,tracking_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+  for(const l of o.lines)st.run(id,l.line_no,l.description,l.qty,l.unit_price,l.vat_rate,l.net,l.vat,l.total,l.tax_category,l.exemption_code,l.exemption_reason,l.unit_code,l.item_id||null,l.stock_qty_micro||0,l.unit_factor_micro||1000000,l.unit_name||'',l.warehouse_id||null,l.list_price??l.unit_price,l.discount_rate||0,JSON.stringify(l.tracking||[]));
   for(const g of taxes)db.prepare('INSERT INTO invoice_tax_totals VALUES(?,?,?,?,?,?,?)').run(id,g.tax_category,g.vat_rate,g.exemption_code,g.exemption_reason,g.taxable,g.vat);
   return id;
 }
@@ -152,7 +153,7 @@ export const createCreditNote = (db, user, origId, b) => tx(db, () => {
     if (!Number.isFinite(q)) throw new Error('كمية الإرجاع غير صالحة');
     if (!(q > 0)) continue;
     if (q > rem[ol.line_no] + 1e-9) throw new Error(`الكمية المرتجعة للبند ${ol.line_no} أكبر من المتبقي (${rem[ol.line_no]})`);
-    lines.push({ original_line_no: ol.line_no, description: ol.description, qty: q, unit_price: ol.unit_price / 100, vat_rate:ol.vat_rate,tax_category:ol.tax_category,exemption_code:ol.exemption_code,exemption_reason:ol.exemption_reason,unit_code:ol.unit_code,item_id:ol.item_id,stock_qty_micro:ol.stock_qty_micro?baseQuantity(q,ol.unit_factor_micro):0,unit_factor_micro:ol.unit_factor_micro,unit_name:ol.unit_name,warehouse_id:ol.warehouse_id });
+    lines.push({ original_line_no: ol.line_no, tracking:trackingInput(w.tracking), description: ol.description, qty: q, unit_price: ol.unit_price / 100, vat_rate:ol.vat_rate,tax_category:ol.tax_category,exemption_code:ol.exemption_code,exemption_reason:ol.exemption_reason,unit_code:ol.unit_code,item_id:ol.item_id,stock_qty_micro:ol.stock_qty_micro?baseQuantity(q,ol.unit_factor_micro):0,unit_factor_micro:ol.unit_factor_micro,unit_name:ol.unit_name,warehouse_id:ol.warehouse_id });
   }
   if (!lines.length) throw new Error('لا توجد كميات للإرجاع');
   const id = insertInvoice(db, { type: '381', lines: calcLines(lines).map((l, i) => ({ ...l, line_no: lines[i].original_line_no })), pos_id: o.pos_id, party_id: o.party_id, payment: o.payment, ref: origId, reason:b.reason,user,invoice_kind:o.invoice_kind,supply_date:o.supply_date });
@@ -173,6 +174,7 @@ export function getInvoice(db, id) {
   }
   inv.tax_totals=db.prepare('SELECT * FROM invoice_tax_totals WHERE invoice_id=?').all(id);
   inv.lines = db.prepare('SELECT * FROM invoice_lines WHERE invoice_id=? ORDER BY line_no').all(id);
+  for(const line of inv.lines){line.tracking_mode=line.item_id?db.prepare('SELECT tracking_mode FROM items WHERE id=?').get(line.item_id)?.tracking_mode||'none':'none';const movement=db.prepare('SELECT id FROM stock_movements WHERE invoice_id=? AND line_no=?').get(inv.id,line.line_no);line.tracking=movement?movementTracking(db,movement.id):JSON.parse(line.tracking_json||'[]');line.tracking_remaining=movement&&inv.type==='388'?remainingTracking(db,movement.id):[];}
   if (inv.type === '388' && inv.status === 'issued') {
     const rem = Object.fromEntries(remainingQty(db, id).map(r => [r.line_no, r.remaining]));
     inv.lines.forEach(l => (l.remaining = rem[l.line_no]));

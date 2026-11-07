@@ -1,0 +1,48 @@
+ALTER TABLE items ADD COLUMN tracking_mode TEXT NOT NULL DEFAULT 'none' CHECK(tracking_mode IN ('none','lot','serial'));
+ALTER TABLE items ADD COLUMN expiry_required INTEGER NOT NULL DEFAULT 0 CHECK(expiry_required IN (0,1));
+CREATE TABLE trace_units(id INTEGER PRIMARY KEY,item_id INTEGER NOT NULL REFERENCES items(id),code TEXT NOT NULL CHECK(length(trim(code)) BETWEEN 1 AND 100),expiry_date TEXT,UNIQUE(item_id,code),CHECK(expiry_date IS NULL OR (expiry_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND date(expiry_date,'+0 days') IS NOT NULL AND date(expiry_date,'+0 days')=expiry_date)));
+CREATE TABLE trace_seals(movement_id INTEGER PRIMARY KEY REFERENCES stock_movements(id));
+ALTER TABLE stock_movements ADD COLUMN tracking_seal_id INTEGER REFERENCES trace_seals(movement_id) DEFERRABLE INITIALLY DEFERRED;
+ALTER TABLE stock_movements ADD COLUMN return_source_movement_id INTEGER REFERENCES stock_movements(id);
+CREATE TABLE trace_allocations(id INTEGER PRIMARY KEY,movement_id INTEGER NOT NULL REFERENCES stock_movements(id),trace_id INTEGER NOT NULL REFERENCES trace_units(id),qty_micro INTEGER NOT NULL CHECK(qty_micro!=0 AND abs(qty_micro)<=9007199254740991),original_allocation_id INTEGER REFERENCES trace_allocations(id),UNIQUE(movement_id,trace_id));
+CREATE INDEX trace_allocations_by_trace ON trace_allocations(trace_id,id);
+CREATE INDEX trace_returns_by_origin ON trace_allocations(original_allocation_id) WHERE original_allocation_id IS NOT NULL;
+CREATE TABLE trace_positions(trace_id INTEGER NOT NULL REFERENCES trace_units(id),warehouse_id INTEGER NOT NULL REFERENCES warehouses(id),qty_micro INTEGER NOT NULL CHECK(qty_micro BETWEEN 0 AND 9007199254740991),last_allocation_id INTEGER NOT NULL UNIQUE REFERENCES trace_allocations(id),PRIMARY KEY(trace_id,warehouse_id));
+ALTER TABLE invoice_lines ADD COLUMN tracking_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE purchase_lines ADD COLUMN tracking_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE stocktake_lines ADD COLUMN expected_movement_id INTEGER;
+ALTER TABLE stocktake_lines ADD COLUMN tracking_counts TEXT NOT NULL DEFAULT '[]';
+-- Historical drafts retain a NULL marker. New drafts snapshot the last movement too.
+CREATE TRIGGER item_tracking_valid_insert BEFORE INSERT ON items WHEN (NEW.tracking_mode!='none' AND (NEW.track_stock!=1 OR NEW.item_kind!='product')) OR (NEW.tracking_mode='none' AND NEW.expiry_required!=0) OR (NEW.tracking_mode='serial' AND NEW.unit_code!='PCE') BEGIN SELECT RAISE(ABORT,'التتبع لصنف مخزني والتسلسل لقطعة كاملة');END;
+CREATE TRIGGER item_tracking_valid_update BEFORE UPDATE ON items WHEN (NEW.tracking_mode!='none' AND (NEW.track_stock!=1 OR NEW.item_kind!='product')) OR (NEW.tracking_mode='none' AND NEW.expiry_required!=0) OR (NEW.tracking_mode='serial' AND (NEW.unit_code!='PCE' OR EXISTS(SELECT 1 FROM item_units u WHERE u.item_id=NEW.id AND u.active=1 AND u.factor_micro%1000000!=0))) BEGIN SELECT RAISE(ABORT,'التتبع لصنف مخزني والتسلسل لا يقبل جزءًا من قطعة');END;
+CREATE TRIGGER item_tracking_fixed BEFORE UPDATE ON items WHEN (NEW.tracking_mode!=OLD.tracking_mode OR NEW.expiry_required!=OLD.expiry_required) AND (EXISTS(SELECT 1 FROM stock_movements WHERE item_id=OLD.id) OR EXISTS(SELECT 1 FROM invoice_lines WHERE item_id=OLD.id) OR EXISTS(SELECT 1 FROM trace_units WHERE item_id=OLD.id) OR EXISTS(SELECT 1 FROM stocktake_lines WHERE item_id=OLD.id)) BEGIN SELECT RAISE(ABORT,'نمط التتبع ثابت بعد المستندات؛ أنشئ صنفًا جديدًا');END;
+CREATE TRIGGER serial_unit_insert BEFORE INSERT ON item_units WHEN NEW.active=1 AND NEW.factor_micro%1000000!=0 AND (SELECT tracking_mode FROM items WHERE id=NEW.item_id)='serial' BEGIN SELECT RAISE(ABORT,'وحدة التسلسل لا تقبل جزءًا من قطعة');END;
+CREATE TRIGGER serial_unit_update BEFORE UPDATE ON item_units WHEN NEW.active=1 AND NEW.factor_micro%1000000!=0 AND (SELECT tracking_mode FROM items WHERE id=NEW.item_id)='serial' BEGIN SELECT RAISE(ABORT,'وحدة التسلسل لا تقبل جزءًا من قطعة');END;
+CREATE TRIGGER trace_identity_insert BEFORE INSERT ON trace_units WHEN NOT EXISTS(SELECT 1 FROM items i WHERE i.id=NEW.item_id AND i.tracking_mode!='none' AND (i.expiry_required=0 OR NEW.expiry_date IS NOT NULL)) BEGIN SELECT RAISE(ABORT,'هوية تتبع أو تاريخ انتهاء غير صالح');END;
+CREATE TRIGGER trace_identity_no_update BEFORE UPDATE ON trace_units BEGIN SELECT RAISE(ABORT,'هوية الدفعة والتسلسل ثابتة');END;
+CREATE TRIGGER trace_identity_no_delete BEFORE DELETE ON trace_units BEGIN SELECT RAISE(ABORT,'هوية الدفعة والتسلسل ثابتة');END;
+CREATE TRIGGER movement_tracking_required BEFORE INSERT ON stock_movements WHEN ((SELECT tracking_mode FROM items WHERE id=NEW.item_id)!='none' AND (NEW.tracking_seal_id IS NULL OR NEW.tracking_seal_id!=NEW.id)) OR ((SELECT tracking_mode FROM items WHERE id=NEW.item_id)='none' AND NEW.tracking_seal_id IS NOT NULL) BEGIN SELECT RAISE(ABORT,'الحركة المتتبعة تحتاج ختمًا يخصها');END;
+CREATE TRIGGER trace_allocation_valid BEFORE INSERT ON trace_allocations WHEN
+ EXISTS(SELECT 1 FROM trace_seals WHERE movement_id=NEW.movement_id)
+ OR NOT EXISTS(SELECT 1 FROM stock_movements m JOIN trace_units t ON t.id=NEW.trace_id JOIN items i ON i.id=m.item_id WHERE m.id=NEW.movement_id AND m.item_id=t.item_id AND i.tracking_mode!='none' AND ((m.delta_micro>0 AND NEW.qty_micro>0) OR (m.delta_micro<0 AND NEW.qty_micro<0)) AND (i.tracking_mode!='serial' OR abs(NEW.qty_micro)=1000000) AND (m.kind!='sale' OR t.expiry_date IS NULL OR t.expiry_date>=date('now','+3 hours')))
+ OR COALESCE((SELECT p.qty_micro FROM trace_positions p JOIN stock_movements m ON m.warehouse_id=p.warehouse_id WHERE p.trace_id=NEW.trace_id AND m.id=NEW.movement_id),0)+NEW.qty_micro<0
+ OR COALESCE((SELECT p.qty_micro FROM trace_positions p JOIN stock_movements m ON m.warehouse_id=p.warehouse_id WHERE p.trace_id=NEW.trace_id AND m.id=NEW.movement_id),0)+NEW.qty_micro>9007199254740991
+ OR ((SELECT i.tracking_mode FROM trace_units t JOIN items i ON i.id=t.item_id WHERE t.id=NEW.trace_id)='serial' AND COALESCE((SELECT SUM(qty_micro) FROM trace_positions WHERE trace_id=NEW.trace_id),0)+NEW.qty_micro>1000000)
+ BEGIN SELECT RAISE(ABORT,'تخصيص تتبع غير صالح أو رصيد دفعة غير كاف أو تسلسل مكرر أو انتهاء');END;
+CREATE TRIGGER trace_return_valid BEFORE INSERT ON trace_allocations WHEN
+ ((SELECT return_source_movement_id FROM stock_movements WHERE id=NEW.movement_id) IS NULL AND NEW.original_allocation_id IS NOT NULL)
+ OR ((SELECT return_source_movement_id FROM stock_movements WHERE id=NEW.movement_id) IS NOT NULL AND NOT EXISTS(SELECT 1 FROM trace_allocations a JOIN stock_movements original ON original.id=a.movement_id JOIN stock_movements m ON m.return_source_movement_id=original.id WHERE a.id=NEW.original_allocation_id AND a.trace_id=NEW.trace_id AND m.id=NEW.movement_id AND m.warehouse_id=original.warehouse_id AND ((a.qty_micro>0 AND NEW.qty_micro<0) OR (a.qty_micro<0 AND NEW.qty_micro>0)) AND abs(NEW.qty_micro)+COALESCE((SELECT SUM(abs(r.qty_micro)) FROM trace_allocations r WHERE r.original_allocation_id=a.id),0)<=abs(a.qty_micro)))
+ BEGIN SELECT RAISE(ABORT,'مرتجع التتبع لا يطابق هوية الأصل أو يتجاوز المتبقي');END;
+CREATE TRIGGER trace_position_insert_guard BEFORE INSERT ON trace_positions WHEN NOT EXISTS(SELECT 1 FROM trace_allocations a JOIN stock_movements m ON m.id=a.movement_id WHERE a.id=NEW.last_allocation_id AND a.trace_id=NEW.trace_id AND m.warehouse_id=NEW.warehouse_id AND a.qty_micro=NEW.qty_micro) OR EXISTS(SELECT 1 FROM trace_allocations a JOIN stock_movements m ON m.id=a.movement_id WHERE a.trace_id=NEW.trace_id AND m.warehouse_id=NEW.warehouse_id AND a.id<NEW.last_allocation_id) BEGIN SELECT RAISE(ABORT,'رصيد التتبع مشتق من الأثر');END;
+CREATE TRIGGER trace_position_update_guard BEFORE UPDATE ON trace_positions WHEN NEW.trace_id!=OLD.trace_id OR NEW.warehouse_id!=OLD.warehouse_id OR NEW.last_allocation_id<=OLD.last_allocation_id OR NOT EXISTS(SELECT 1 FROM trace_allocations a JOIN stock_movements m ON m.id=a.movement_id WHERE a.id=NEW.last_allocation_id AND a.trace_id=NEW.trace_id AND m.warehouse_id=NEW.warehouse_id AND NEW.qty_micro=OLD.qty_micro+a.qty_micro) BEGIN SELECT RAISE(ABORT,'رصيد التتبع مشتق من الأثر');END;
+CREATE TRIGGER trace_position_no_delete BEFORE DELETE ON trace_positions BEGIN SELECT RAISE(ABORT,'رصيد التتبع مشتق ولا يحذف');END;
+CREATE TRIGGER trace_position_after_allocation AFTER INSERT ON trace_allocations BEGIN
+ UPDATE trace_positions SET qty_micro=qty_micro+NEW.qty_micro,last_allocation_id=NEW.id WHERE trace_id=NEW.trace_id AND warehouse_id=(SELECT warehouse_id FROM stock_movements WHERE id=NEW.movement_id);
+ INSERT INTO trace_positions(trace_id,warehouse_id,qty_micro,last_allocation_id) SELECT NEW.trace_id,m.warehouse_id,NEW.qty_micro,NEW.id FROM stock_movements m WHERE m.id=NEW.movement_id AND NOT EXISTS(SELECT 1 FROM trace_positions p WHERE p.trace_id=NEW.trace_id AND p.warehouse_id=m.warehouse_id);
+END;
+CREATE TRIGGER trace_seal_valid BEFORE INSERT ON trace_seals WHEN NOT EXISTS(SELECT 1 FROM stock_movements m WHERE m.id=NEW.movement_id AND m.tracking_seal_id=m.id AND m.delta_micro=(SELECT SUM(qty_micro) FROM trace_allocations WHERE movement_id=m.id)) BEGIN SELECT RAISE(ABORT,'تفاصيل التتبع لا تساوي كمية الحركة');END;
+CREATE TRIGGER trace_seal_no_update BEFORE UPDATE ON trace_seals BEGIN SELECT RAISE(ABORT,'ختم التتبع ثابت');END;
+CREATE TRIGGER trace_seal_no_delete BEFORE DELETE ON trace_seals BEGIN SELECT RAISE(ABORT,'ختم التتبع ثابت');END;
+CREATE TRIGGER trace_allocation_no_update BEFORE UPDATE ON trace_allocations BEGIN SELECT RAISE(ABORT,'أثر التتبع ثابت');END;
+CREATE TRIGGER trace_allocation_no_delete BEFORE DELETE ON trace_allocations BEGIN SELECT RAISE(ABORT,'أثر التتبع ثابت');END;
+UPDATE local_meta SET value='15' WHERE key='schema_version';
