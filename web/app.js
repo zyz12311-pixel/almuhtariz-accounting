@@ -25,8 +25,8 @@ function applyUI() {
   d.style.setProperty('--font', { system: 'Tahoma,"Segoe UI",Arial,sans-serif', serif: '"Traditional Arabic","Times New Roman",serif', mono: 'Consolas,monospace' }[u.font] || 'Tahoma,sans-serif');
 }
 
-const ICONS = { dashboard:'▦', invoices:'▤', new:'＋', parties:'♙', items:'◇', reports:'▥', settings:'⚙', pos:'▣',purchases:'⇣',vouchers:'⇄',journals:'≡',stocktakes:'✓',shifts:'◷',sync:'↻',compliance:'◈',print:'▧' };
-const NAV = [['dashboard', 'نظرة عامة'], ['invoices', 'المبيعات والفواتير'], ['new', 'فاتورة جديدة'], ['pos', 'نقطة البيع'], ['parties', 'العملاء والموردون'], ['items', 'الأصناف والخدمات'], ['purchases','المشتريات'], ['vouchers','القبض والصرف'], ['journals','القيود المحاسبية'], ['stocktakes','الجرد'], ['shifts','الورديات'], ['sync','ربط السحابة'], ['reports', 'التقارير المالية'], ['compliance','الفوترة والهيئة'], ['print', 'إعدادات الطباعة'], ['settings', 'الإعدادات']];
+const ICONS = { dashboard:'▦', invoices:'▤', new:'＋', parties:'♙', items:'◇', reports:'▥', settings:'⚙', pos:'▣',purchases:'⇣',vouchers:'⇄',journals:'≡',stocktakes:'✓',shifts:'◷',sync:'↻',compliance:'◈',print:'▧',quotes:'▱' };
+const NAV = [['dashboard', 'نظرة عامة'], ['invoices', 'المبيعات والفواتير'], ['quotes','عروض الأسعار'], ['new', 'فاتورة جديدة'], ['pos', 'نقطة البيع'], ['parties', 'العملاء والموردون'], ['items', 'الأصناف والخدمات'], ['purchases','المشتريات'], ['vouchers','القبض والصرف'], ['journals','القيود المحاسبية'], ['stocktakes','الجرد'], ['shifts','الورديات'], ['sync','ربط السحابة'], ['reports', 'التقارير المالية'], ['compliance','الفوترة والهيئة'], ['print', 'إعدادات الطباعة'], ['settings', 'الإعدادات']];
 const WORKSPACES = { trade: { name:'التجاري والخدمات', subtitle:'أعمالك اليومية، في مكان واحد', item:'صنف أو خدمة' }, events: { name:'الحفلات والمناسبات', subtitle:'فواتير تجهيزاتك وخدمات مناسباتك', item:'تجهيز أو خدمة' }, engineering: { name:'الهندسي والمقاولات', subtitle:'فواتير الأعمال والخدمات الهندسية', item:'بند أعمال أو خدمة' } };
 let workspace = localStorage.getItem('smartz.workspace') || 'trade';
 if (!WORKSPACES[workspace]) workspace = 'trade';
@@ -77,6 +77,7 @@ function authScreen() {
 
 // ---------- الصفحات ----------
 const pages = {
+  async quotes(){return(await import('./quotations.js')).renderQuotations({api,shell,esc,money});},
   async purchases(){return (await import('./commercial.js')).renderCommercial('purchases',{api,shell,esc,money,S});},
   async vouchers(){return (await import('./commercial.js')).renderCommercial('vouchers',{api,shell,esc,money,S});},
   async journals(){return (await import('./commercial.js')).renderCommercial('journals',{api,shell,esc,money,S});},
@@ -108,6 +109,7 @@ const pages = {
   async new() {
     const isCashier=S.state.user.role==='staff',isPos=location.hash.slice(1)==='pos'||isCashier;
     [S.parties,S.items,S.pos]=await Promise.all([api(isPos?'pos/customers':'parties'),api(isPos?'pos/catalog':'items'),api(isPos?'pos/points':'pos')]);
+    if(!isPos)S.parties=S.parties.filter(p=>['customer','both'].includes(p.kind));
     S.items=S.items.flatMap(i=>[{...i,item_unit_id:null},...(i.units||[]).map(u=>({...i,name_ar:i.name_ar+' — '+u.name,base_unit:u.name,unit_code:u.unit_code,item_unit_id:u.id,unit_price:u.unit_price,barcode:u.barcode,units:[]}))]);
     shell(`<h1>فاتورة جديدة</h1><div class="card"><div class="row"><label>العميل<select id="party"><option value="">— بدون —</option>${S.parties.map(p => `<option value="${p.id}">${esc(p.name_ar)}</option>`).join('')}</select></label>
     <label>نقطة البيع<select id="pos">${S.pos.filter(p => p.active).map(p => `<option value="${p.id}">${esc(p.name)} (${esc(p.prefix)})</option>`).join('')}</select></label>
@@ -120,10 +122,11 @@ const pages = {
     const addRow = () => { const tr = document.createElement('tr');
       tr.innerHTML = `<td><input list="dl" class="d" style="width:100%"></td><td><input class="q" type="number" value="1" min="0" step="any" style="width:80px"></td><td><input class="u" type="number" value="0" min="0" step="any" style="width:100px"></td><td><input class="v" type="number" value="15" style="width:70px"><select class="tc" aria-label="الفئة الضريبية"><option value="S">أساسية</option><option value="Z">صفرية</option><option value="E">معفاة</option><option value="O">خارج النطاق</option></select><input class="ec" placeholder="VATEX-SA-…" aria-label="رمز الإعفاء" hidden><input class="er" placeholder="سبب الإعفاء" aria-label="سبب الإعفاء" hidden></td><td class="num t">0.00</td><td><button class="d">×</button></td>`;
       tr.oninput = e => { if (e.target.classList.contains('d')) { const it = S.items.find(i => i.name_ar === e.target.value); tr.dataset.itemId=it?String(it.id):'';tr.dataset.itemUnitId=it?.item_unit_id?String(it.item_unit_id):'';if (it) { $('.u', tr).value = it.unit_price; $('.v', tr).value = it.vat_rate;$('.tc',tr).value=it.tax_category||'S';$('.ec',tr).value=it.exemption_code||'';$('.er',tr).value=it.exemption_reason||''; } }if(e.target.classList.contains('tc'))$('.v',tr).value=$('.tc',tr).value==='S'?15:0;$('.ec',tr).hidden=$('.tc',tr).value==='S';$('.er',tr).hidden=$('.tc',tr).value==='S';calc(); };
+      if(!isPos){$('.u',tr).parentElement.insertAdjacentHTML('beforeend','<label class="line-discount">خصم %<input class="disc" type="number" value="0" min="0" max="100" step="0.01" aria-label="نسبة خصم الوحدة"></label>');}
       if(isPos){for(const selector of ['.d','.u','.v','.ec','.er'])$(selector,tr).readOnly=true;$('.tc',tr).disabled=true;}
       $('button', tr).onclick = () => { tr.remove(); calc(); }; tb.append(tr); };
-    const rows = () => $$('tr', tb).map(tr => ({ item_id:Number(tr.dataset.itemId)||null,item_unit_id:Number(tr.dataset.itemUnitId)||null, description: $('.d', tr).value, qty: +$('.q', tr).value, unit_price: +$('.u', tr).value, vat_rate:+$('.v',tr).value,tax_category:$('.tc',tr).value,exemption_code:$('.ec',tr).value,exemption_reason:$('.er',tr).value }));
-    const calc=()=>{const lines=rows(),groups=new Map();let sub=0;$$('tr',tb).forEach((tr,index)=>{const line=lines[index],net=Math.round(line.qty*Math.round(line.unit_price*100)),vat=Math.round(net*line.vat_rate/100);sub+=net;const key=[line.tax_category,line.vat_rate,line.exemption_code].join('|');if(!groups.has(key))groups.set(key,{base:0,rate:line.vat_rate});groups.get(key).base+=net;$('.t',tr).textContent=money((net+vat)/100);});const vat=[...groups.values()].reduce((s,g)=>s+Math.round(g.base*g.rate/100),0);$('#tt').textContent='قبل الضريبة '+money(sub/100)+' + ضريبة '+money(vat/100)+' = '+money((sub+vat)/100);};
+    const rows = () => $$('tr', tb).map(tr => ({ item_id:Number(tr.dataset.itemId)||null,item_unit_id:Number(tr.dataset.itemUnitId)||null, description: $('.d', tr).value, qty: +$('.q', tr).value, unit_price: +$('.u', tr).value,discount_rate:Number($('.disc',tr)?.value||0), vat_rate:+$('.v',tr).value,tax_category:$('.tc',tr).value,exemption_code:$('.ec',tr).value,exemption_reason:$('.er',tr).value }));
+    const calc=()=>{const lines=rows(),groups=new Map();let sub=0;$$('tr',tb).forEach((tr,index)=>{const line=lines[index],rate=Math.round(line.discount_rate*100),list=Math.round(line.unit_price*100),unit=list>=0&&Number.isSafeInteger(list)&&rate>=0&&rate<=10000?Number((BigInt(list)*BigInt(10000-rate)+5000n)/10000n):0,net=Math.round(line.qty*unit),vat=Math.round(net*line.vat_rate/100);sub+=net;const key=[line.tax_category,line.vat_rate,line.exemption_code].join('|');if(!groups.has(key))groups.set(key,{base:0,rate:line.vat_rate});groups.get(key).base+=net;$('.t',tr).textContent=money((net+vat)/100);});const vat=[...groups.values()].reduce((s,g)=>s+Math.round(g.base*g.rate/100),0);$('#tt').textContent='بعد خصم الوحدة: قبل الضريبة '+money(sub/100)+' + ضريبة '+money(vat/100)+' = '+money((sub+vat)/100);};
     $('#add').onclick = () => { addRow(); calc(); }; addRow(); calc();
     const save = draft => guard(async () => {
       const lines = rows();
@@ -135,6 +138,7 @@ const pages = {
       if(isPos)await globalThis.AlmuhtarizStore?.remove(localScope(),'sale','drafts');
       if (!draft) window.open(`/api/invoices/${r.id}/html?profile=${location.hash.slice(1)==='pos'||S.state.user.role==='staff'?'pos':'accountant'}`, '_blank'); if(isPos){await pages.pos();msg('تم إصدار البيع وحفظه محليًا',true);}else location.hash='invoices'; });
     $('#issue').onclick = save(false); $('#draft').onclick = save(true);
+    if(!isPos){const {attachQuoteAction}=await import('./quotations.js');attachQuoteAction({api,rows,S,esc,onSaved:async()=>{location.hash='quotes';}});}
     if(isPos){$('#draft').hidden=true;$('#add').hidden=true;$('#invoice-kind').disabled=true;}
   },
   async pos() {

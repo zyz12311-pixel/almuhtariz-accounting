@@ -22,6 +22,8 @@ import {createPurchase,listPurchases,purchaseDetails,createVoucher,partyLedger,p
 import {stockValuation} from './valuation.js';
 import {openShift,closeShift,shiftSummary,posReturn,createStocktake,approveStocktake} from './operations.js';
 import {syncInfo,configureSync,syncBranch} from './sync.js';
+import {createQuotation,quotation,convertQuotation,cancelQuotation} from './quotations.js';
+import {commercialPrint} from './commercial-print.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.join(here, '..', 'web');
@@ -98,6 +100,13 @@ export function createApp({ dbFile, licensePath }) {
   route('PUT','/api/parties/:id',({params,body})=>{need(db.prepare('SELECT 1 FROM parties WHERE id=?').get(params.id),'العميل غير موجود');const data=partyData(body),keys=Object.keys(data);db.prepare('UPDATE parties SET '+keys.map(k=>k+'=?').join(',')+' WHERE id=?').run(...keys.map(k=>data[k]),params.id);return{ok:true};});
   route('GET','/api/items',()=>listItems(db));
   route('GET','/api/purchases',()=>listPurchases(db),{accountant:true});
+  route('GET','/api/purchases/:id/html',({params})=>{const p=purchaseDetails(db,params.id),snapshot=db.prepare('SELECT supplier FROM purchase_snapshots WHERE purchase_id=?').get(p.id);return new Raw(commercialPrint({title:p.kind==='return'?'مرتجع شراء':'سند تسجيل فاتورة مورد',number:p.number,date:p.document_date,company:getSetting(db,'company'),party:snapshot?JSON.parse(snapshot.supplier):null,headers:['الوصف','الوحدة','الكمية','سعر الوحدة','الصافي','الضريبة'],rows:p.lines.map(l=>[l.description,l.unit_name,l.qty,l.unit_price,l.net,l.vat]),totals:[['قبل الضريبة',p.subtotal],['الضريبة',p.vat],['الإجمالي',p.total]],notes:'مرجع المورد: '+p.supplier_reference+' · '+p.notes,settings:getSetting(db,'invoice')}));},{accountant:true});
+  route('GET','/api/vouchers/:id/html',({params})=>{const v=db.prepare('SELECT * FROM cash_vouchers WHERE id=?').get(params.id);need(v,'السند غير موجود');return new Raw(commercialPrint({title:v.kind==='receipt'?'سند قبض':'سند صرف',number:v.number,date:v.voucher_date,company:getSetting(db,'company'),party:db.prepare('SELECT name_ar FROM parties WHERE id=?').get(v.party_id),headers:['الحساب','البيان','المبلغ'],rows:[[v.cash_account,v.notes,v.amount/100]],totals:[['قيمة السند',v.amount/100]],settings:getSetting(db,'invoice')}));},{accountant:true});
+  route('GET','/api/quotations',()=>db.prepare('SELECT id,number,document_date,valid_until,status,total,invoice_id FROM quotations ORDER BY id DESC LIMIT 500').all(),{accountant:true});
+  route('POST','/api/quotations',({body,user})=>createQuotation(db,user.id,body),{accountant:true});
+  route('POST','/api/quotations/:id/convert',({params,user,body})=>convertQuotation(db,user.id,params.id,body),{accountant:true});
+  route('POST','/api/quotations/:id/cancel',({params,user})=>cancelQuotation(db,user.id,params.id),{accountant:true});
+  route('GET','/api/quotations/:id/html',({params})=>{const q=quotation(db,params.id);return new Raw(commercialPrint({title:'عرض سعر',number:q.number,date:q.document_date,company:q.company,party:q.party,headers:['الوصف','الكمية','سعر الوحدة الصافي','الخصم %','الصافي','الضريبة'],rows:q.lines.map(l=>[l.input.description,l.input.qty,l.calculated.unit_price/100,l.calculated.discount_rate/100,l.calculated.net/100,l.calculated.vat/100]),totals:[['قبل الضريبة',q.subtotal/100],['الضريبة',q.vat/100],['الإجمالي',q.total/100]],notes:'صالح حتى '+q.valid_until+' · '+q.notes,settings:getSetting(db,'invoice')}));},{accountant:true});
   route('GET','/api/purchases/:id',({params})=>purchaseDetails(db,params.id),{accountant:true});
   route('POST','/api/purchases',({body,user})=>createPurchase(db,user.id,body),{accountant:true});
   route('GET','/api/vouchers',()=>db.prepare('SELECT v.*,p.name_ar party FROM cash_vouchers v JOIN parties p ON p.id=v.party_id ORDER BY v.id DESC LIMIT 500').all().map(v=>({...v,amount:v.amount/100})),{accountant:true});

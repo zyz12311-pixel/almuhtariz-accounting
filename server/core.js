@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { tx } from './db.js';
 import { toCents, fromCents, tlv, sha256b64, nowRiyadh } from './lib.js';
-import { calculateLines, taxBreakdown } from './money.js';
+import { calculateLines, taxBreakdown,sumCents } from './money.js';
 import { assertIssueData, assertSupported } from './compliance.js';
 import { appendAudit } from './audit.js';
 import { buildInvoiceXml, candidateHash } from './zatca/xml.js';
@@ -55,7 +55,7 @@ function postEntryAtomic(db,e){
 
 const calcLines=input=>calculateLines(input).map((line,i)=>({...line,item_id:input[i].item_id||null,stock_qty_micro:input[i].stock_qty_micro||0,unit_factor_micro:input[i].unit_factor_micro||1000000,unit_name:input[i].unit_name||'',warehouse_id:input[i].warehouse_id||null}));
 function insertInvoice(db, o) {
-  const taxes=taxBreakdown(o.lines),sub=o.lines.reduce((s,l)=>s+l.net,0),vat=taxes.reduce((s,g)=>s+g.vat,0);
+  const taxes=taxBreakdown(o.lines),sub=sumCents(o.lines.map(l=>l.net)),vat=sumCents(taxes.map(g=>g.vat));
   if(!Number.isSafeInteger(sub+vat))throw Error('قيمة الفاتورة أكبر من المسموح');
   const pos = db.prepare('SELECT * FROM pos_points WHERE id=? AND active=1').get(o.pos_id || 1);
   if (!pos) throw new Error('نقطة البيع غير موجودة أو موقوفة');
@@ -63,11 +63,12 @@ function insertInvoice(db, o) {
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(crypto.randomUUID(), o.type, pos.id, pos.branch_id, o.party_id || null, o.payment || 'cash',
     sub, vat, sub + vat, o.ref || null, o.reason || null, o.notes || null, o.user || null).lastInsertRowid;
   const party=o.party_id?db.prepare('SELECT * FROM parties WHERE id=?').get(o.party_id):null;
+  if(o.party_id&&(!party||!['customer','both'].includes(party.kind)))throw Error('اختر عميلًا صالحًا لفاتورة البيع');
   const kind=o.invoice_kind||(party&&(party.vat_number||party.entity_type==='business')?'standard':'simplified');
   if(!['standard','simplified'].includes(kind))throw Error('نوع الفاتورة غير صالح');
   db.prepare('UPDATE invoices SET invoice_kind=?,document_code=?,supply_date=?,environment=? WHERE id=?').run(kind,o.document_code||o.type,o.supply_date||null,'development',id);
-  const st=db.prepare('INSERT INTO invoice_lines(invoice_id,line_no,description,qty,unit_price,vat_rate,net,vat,total,tax_category,exemption_code,exemption_reason,unit_code,item_id,stock_qty_micro,unit_factor_micro,unit_name,warehouse_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-  for(const l of o.lines)st.run(id,l.line_no,l.description,l.qty,l.unit_price,l.vat_rate,l.net,l.vat,l.total,l.tax_category,l.exemption_code,l.exemption_reason,l.unit_code,l.item_id||null,l.stock_qty_micro||0,l.unit_factor_micro||1000000,l.unit_name||'',l.warehouse_id||null);
+  const st=db.prepare('INSERT INTO invoice_lines(invoice_id,line_no,description,qty,unit_price,vat_rate,net,vat,total,tax_category,exemption_code,exemption_reason,unit_code,item_id,stock_qty_micro,unit_factor_micro,unit_name,warehouse_id,list_price,discount_rate) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+  for(const l of o.lines)st.run(id,l.line_no,l.description,l.qty,l.unit_price,l.vat_rate,l.net,l.vat,l.total,l.tax_category,l.exemption_code,l.exemption_reason,l.unit_code,l.item_id||null,l.stock_qty_micro||0,l.unit_factor_micro||1000000,l.unit_name||'',l.warehouse_id||null,l.list_price??l.unit_price,l.discount_rate||0);
   for(const g of taxes)db.prepare('INSERT INTO invoice_tax_totals VALUES(?,?,?,?,?,?,?)').run(id,g.tax_category,g.vat_rate,g.exemption_code,g.exemption_reason,g.taxable,g.vat);
   return id;
 }

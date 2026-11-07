@@ -19,7 +19,7 @@ export function renderInvoice({ inv, company, s, preview = false }) {
     : `<div class="hd" style="justify-content:space-between;flex-direction:${s.logoPosition === 'right' ? 'row' : 'row-reverse'}">${logo}${head}</div>`;
   const cols = [['#', 'showItemNo'], ['الوصف', 1], ['الكمية', 1], ['سعر الوحدة', 'showUnitPrice'], ['الضريبة %', 'showVatCol'], ['الإجمالي', 1]].filter(c => c[1] === 1 || s[c[1]]);
   const rows = inv.lines.map(l => `<tr>${s.showItemNo ? `<td>${l.line_no}</td>` : ''}<td class="d">${esc(l.description)}</td><td>${l.qty}</td>
-    ${s.showUnitPrice ? `<td>${money(l.unit_price)}</td>` : ''}${s.showVatCol ? `<td>${l.vat_rate}</td>` : ''}<td>${money(l.total)}</td></tr>`).join('');
+    ${s.showUnitPrice ? `<td>${money(l.unit_price)}${l.discount_rate?`<small style="display:block">قبل الخصم ${money(l.list_price)} · خصم ${l.discount_rate/100}%</small>`:''}</td>` : ''}${s.showVatCol ? `<td>${l.vat_rate}</td>` : ''}<td>${money(l.total)}</td></tr>`).join('');
   const qrBlock = `<div class="qr"><div id="qr" data-v="${esc(inv.qr || '')}" style="width:${s.qrSize}px;height:${s.qrSize}px"></div></div>`;
   const qrJust = { 'bottom-right': 'flex-start', 'bottom-left': 'flex-end', 'bottom-center': 'center' }[s.qrPosition] || 'flex-end';
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${esc(inv.number || 'مسودة')} | المحترز للمحاسبة</title>
