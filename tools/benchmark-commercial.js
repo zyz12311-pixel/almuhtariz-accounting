@@ -1,6 +1,6 @@
 // Isolated synthetic fixtures only. Historical seeding is excluded from timings.
 import fs from 'node:fs';import path from 'node:path';import os from 'node:os';import crypto from 'node:crypto';import {performance} from 'node:perf_hooks';import {Worker} from 'node:worker_threads';
-import {openDb} from '../server/db.js';import {seedCompany} from '../server/core.js';import {hashPass,nowRiyadh} from '../server/lib.js';import {appendAudit,verifyAudit} from '../server/audit.js';import {balance,recordStock} from '../server/inventory.js';import {listItems} from '../server/items.js';import {createPurchase,financialReport} from '../server/commercial.js';import {branchSnapshot} from '../server/sync.js';
+import {openDb} from '../server/db.js';import {seedCompany} from '../server/core.js';import {hashPass,nowRiyadh} from '../server/lib.js';import {appendAudit,verifyAudit} from '../server/audit.js';import {balance,recordStock} from '../server/inventory.js';import {listItems} from '../server/items.js';import {createPurchase,financialReport,FINANCIAL_SQL} from '../server/commercial.js';import {branchSnapshot} from '../server/sync.js';
 import {rebuildStockPositions} from '../server/stock-positions.js';
 const sizes=(process.env.BENCH_SIZES||'1000,10000,100000').split(',').map(Number);if(sizes.some(n=>!Number.isInteger(n)||n<1||n>1000000))throw Error('BENCH_SIZES must contain integers from 1 to 1000000');
 const output=fs.mkdtempSync(path.resolve('releases/performance-')),today=nowRiyadh().date,password='benchmark-only-2026!';
@@ -50,7 +50,7 @@ for(const n of sizes){
   data.snapshot_bytes=Buffer.byteLength(JSON.stringify(branchSnapshot(db)));
   data.plans.balance=db.prepare('EXPLAIN QUERY PLAN SELECT qty_micro FROM stock_positions WHERE item_id=? AND warehouse_id=?').all(1,1);
   data.plans.history_reconciliation=db.prepare('EXPLAIN QUERY PLAN SELECT SUM(delta_micro) FROM stock_movements WHERE item_id=? AND warehouse_id=?').all(1,1);
-  data.plans.report=db.prepare('EXPLAIN QUERY PLAN SELECT a.code,SUM(CASE WHEN e.entry_date BETWEEN ? AND ? THEN l.debit ELSE 0 END) FROM accounts a LEFT JOIN journal_lines l ON l.account_code=a.code LEFT JOIN journal_entries e ON e.id=l.entry_id GROUP BY a.code').all(today,today);
+  data.plans.report=db.prepare('EXPLAIN QUERY PLAN '+FINANCIAL_SQL).all(today,today,today,today);
   db.exec('PRAGMA wal_checkpoint(TRUNCATE)');data.database_bytes=fs.statSync(file).size;data.memory_rss_mb=Math.round(process.memoryUsage().rss/1048576);
  }finally{db.close();}
  report.fixtures.push(data);fs.writeFileSync(path.join(output,'report.json'),JSON.stringify(report,null,2));

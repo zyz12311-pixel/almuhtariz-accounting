@@ -1,3 +1,4 @@
+import {pagedView} from './paged-view.js';
 export function attachQuoteAction({api,rows,S,esc,onSaved}){
  const $=s=>document.querySelector(s),button=document.createElement('button');button.id='save-quotation';button.type='button';button.textContent='حفظ كعرض سعر';$('#issue').parentElement.append(button);
  button.onclick=()=>{
@@ -7,11 +8,15 @@ export function attachQuoteAction({api,rows,S,esc,onSaved}){
  };
 }
 export async function renderQuotations({api,shell,esc,money}){
- const rows=await api('quotations'),$=s=>document.querySelector(s);
- shell('<div class="page-heading"><div><span class="eyebrow">المبيعات</span><h1>عروض الأسعار</h1><p>العرض مستقل عن الفاتورة. التحويل ينشئ مسودة ولا يصدر مستندًا ضريبيًا.</p></div><a class="button p" href="#new">إعداد عرض جديد</a></div><div id="quotes-error" class="msg" role="alert" hidden></div><section class="card table-scroll"><table><thead><tr><th>الرقم</th><th>التاريخ</th><th>صالح حتى</th><th>الحالة</th><th>الإجمالي</th><th>الإجراءات</th></tr></thead><tbody>'+rows.map(q=>'<tr><td>'+esc(q.number)+'</td><td>'+esc(q.document_date)+'</td><td>'+esc(q.valid_until)+'</td><td>'+esc(({open:'مفتوح',accepted:'محول لمسودة فاتورة',cancelled:'ملغى'})[q.status])+'</td><td>'+money(q.total/100)+'</td><td><a href="/api/quotations/'+q.id+'/html" target="_blank" rel="noopener">طباعة</a> '+(q.status==='open'?'<button data-convert-quote="'+q.id+'">تحويل لمسودة</button><button data-cancel-quote="'+q.id+'">إلغاء العرض</button>':q.invoice_id?'<a href="/api/invoices/'+q.invoice_id+'/html" target="_blank" rel="noopener">عرض الفاتورة</a>':'')+'</td></tr>').join('')+'</tbody></table></section>');
+ const result=await api('lists/quotations'),rows=result.rows,$=s=>document.querySelector(s);
+ const quoteRows=rows=>rows.map(q=>'<tr><td>'+esc(q.number)+'</td><td>'+esc(q.document_date)+'</td><td>'+esc(q.valid_until)+'</td><td>'+esc(({open:'مفتوح',accepted:'محول لمسودة فاتورة',cancelled:'ملغى'})[q.status])+'</td><td>'+money(q.total/100)+'</td><td><a href="/api/quotations/'+q.id+'/html" target="_blank" rel="noopener">طباعة</a> '+(q.status==='open'?'<button data-convert-quote="'+q.id+'">تحويل لمسودة</button><button data-cancel-quote="'+q.id+'">إلغاء العرض</button>':q.invoice_id?'<a href="/api/invoices/'+q.invoice_id+'/html" target="_blank" rel="noopener">عرض الفاتورة</a>':'')+'</td></tr>').join('');
+ shell('<div class="page-heading"><div><span class="eyebrow">المبيعات</span><h1>عروض الأسعار</h1><p>العرض مستقل عن الفاتورة. التحويل ينشئ مسودة ولا يصدر مستندًا ضريبيًا.</p></div><a class="button p" href="#new">إعداد عرض جديد</a></div><div id="quotes-error" class="msg" role="alert" hidden></div><section class="card table-scroll"><table><thead><tr><th>الرقم</th><th>التاريخ</th><th>صالح حتى</th><th>الحالة</th><th>الإجمالي</th><th>الإجراءات</th></tr></thead><tbody>'+quoteRows(rows)+'</tbody></table></section>');
  const error=e=>{$('#quotes-error').textContent=e.message;$('#quotes-error').hidden=false;};
+ const bindQuotes=()=>{
  document.querySelectorAll('[data-convert-quote]').forEach(button=>button.onclick=()=>{
   const dialog=$('#dlg');dialog.innerHTML='<h2>تحويل عرض السعر</h2><form id="convert-quote-form"><label>طريقة الدفع<select id="quote-payment"><option value="cash">نقدًا</option><option value="bank">بنك</option><option value="credit">آجل</option></select></label><p>تراجع الفاتورة من قائمة الفواتير قبل إصدارها. لا يُخصم المخزون في هذه الخطوة.</p><div id="convert-error" class="msg" hidden></div><button type="submit" class="p">إنشاء المسودة</button><button type="button" id="cancel-convert">إغلاق</button></form>';dialog.showModal();$('#cancel-convert').onclick=()=>dialog.close();$('#convert-quote-form').onsubmit=async e=>{e.preventDefault();const submit=e.target.querySelector('[type=submit]');submit.disabled=true;try{await api('quotations/'+button.dataset.convertQuote+'/convert',{method:'POST',body:{payment:$('#quote-payment').value}});dialog.close();location.hash='invoices';}catch(e){$('#convert-error').textContent=e.message;$('#convert-error').hidden=false;submit.disabled=false;}};
  });
  document.querySelectorAll('[data-cancel-quote]').forEach(button=>button.onclick=async()=>{if(!confirm('تأكيد إلغاء عرض السعر؟'))return;button.disabled=true;try{await api('quotations/'+button.dataset.cancelQuote+'/cancel',{method:'POST',body:{}});await renderQuotations({api,shell,esc,money});}catch(e){error(e);button.disabled=false;}});
+ };
+ await pagedView({api,path:'lists/quotations',body:document.querySelector('section.card tbody'),renderRows:quoteRows,initial:result,bindRows:bindQuotes});
 }

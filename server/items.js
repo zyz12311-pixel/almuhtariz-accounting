@@ -6,7 +6,13 @@ const string=(value,max=150)=>{if(typeof value!=='string'||value.length>max||/[\
 const barcode=value=>{if(value==null||value==='')return null;const s=string(value,80);if(!/^[\x20-\x7e]+$/.test(s))throw Error('الباركود يجب أن يكون نصًا قابلًا للطباعة');return s;};
 const currency=value=>Number(scaledInteger(value,2,'المبلغ'));
 const optionalDecimal=value=>{if(value===''||value==null)return '';scaledInteger(value,6,'المقاس أو الوزن');return String(value);};
-export function listItems(db){return db.prepare('SELECT * FROM items ORDER BY name_ar').all().map(item=>({...item,unit_price:item.unit_price/100,purchase_cost:item.purchase_cost/100,reorder_qty:item.reorder_micro/1000000,stock_qty:db.prepare('SELECT COALESCE(SUM(qty_micro),0) quantity FROM stock_positions WHERE item_id=?').get(item.id).quantity/1000000,units:db.prepare('SELECT * FROM item_units WHERE item_id=? AND active=1 ORDER BY id').all(item.id).map(u=>({...u,unit_price:u.unit_price/100,factor:u.factor_micro/1000000}))}));}
+export function itemRows(db,items){
+ if(!items.length)return[];const ids=items.map(i=>i.id),filter=ids.length<=500?' WHERE item_id IN ('+ids.map(()=>'?').join(',')+')':'',args=filter?ids:[];
+ const balances=new Map(db.prepare('SELECT item_id,SUM(qty_micro) quantity FROM stock_positions'+filter+' GROUP BY item_id').all(...args).map(r=>[r.item_id,r.quantity]));
+ const units=new Map();for(const u of db.prepare('SELECT * FROM item_units'+(filter?filter+' AND active=1':' WHERE active=1')+' ORDER BY id').all(...args)){if(!units.has(u.item_id))units.set(u.item_id,[]);units.get(u.item_id).push({...u,unit_price:u.unit_price/100,factor:u.factor_micro/1000000});}
+ return items.map(item=>({...item,unit_price:item.unit_price/100,purchase_cost:item.purchase_cost/100,reorder_qty:item.reorder_micro/1000000,stock_qty:(balances.get(item.id)||0)/1000000,units:units.get(item.id)||[]}));
+}
+export function listItems(db){return itemRows(db,db.prepare('SELECT * FROM items ORDER BY name_ar,id').all());}
 export function saveItem(db,body,itemId=null,actor=null){return tx(db,()=>{
  const existing=itemId?db.prepare('SELECT * FROM items WHERE id=?').get(itemId):null;if(itemId&&!existing)throw Error('الصنف غير موجود');
  const b={name_ar:'',unit_price:0,vat_rate:15,item_kind:'product',base_unit:'قطعة',unit_code:'PCE',track_stock:false,sku:'',category:'',brand:'',purchase_cost:0,reorder_qty:0,weight_kg:'',volume_l:'',length_cm:'',width_cm:'',height_cm:'',size_label:'',color:'',notes:'',...(existing?{...existing,unit_price:existing.unit_price/100,purchase_cost:existing.purchase_cost/100,reorder_qty:existing.reorder_micro/1000000}:{}),...body};

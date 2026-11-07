@@ -14,3 +14,4 @@ await import('./sync.js');
 await import('./quotations.js');
 await import('./stock-positions.js');
 await import('./maintenance.js');
+await import('./paging.js');

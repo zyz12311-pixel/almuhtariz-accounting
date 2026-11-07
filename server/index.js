@@ -26,6 +26,7 @@ import {openShift,closeShift,shiftSummary,posReturn,createStocktake,approveStock
 import {syncInfo,configureSync,syncBranch} from './sync.js';
 import {createQuotation,quotation,convertQuotation,cancelQuotation} from './quotations.js';
 import {commercialPrint} from './commercial-print.js';
+import {commercialList,shiftList,complianceList,posHistoryList} from './lists.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.join(here, '..', 'web');
@@ -102,42 +103,45 @@ export function createApp({ dbFile, licensePath }) {
   route('POST','/api/parties',({body})=>{const data=partyData(body),keys=Object.keys(data);return{id:db.prepare('INSERT INTO parties('+keys.join(',')+') VALUES('+keys.map(()=>'?').join(',')+')').run(...keys.map(k=>data[k])).lastInsertRowid};});
   route('PUT','/api/parties/:id',({params,body})=>{need(db.prepare('SELECT 1 FROM parties WHERE id=?').get(params.id),'العميل غير موجود');const data=partyData(body),keys=Object.keys(data);db.prepare('UPDATE parties SET '+keys.map(k=>k+'=?').join(',')+' WHERE id=?').run(...keys.map(k=>data[k]),params.id);return{ok:true};});
   route('GET','/api/items',()=>listItems(db));
+  route('GET','/api/lists/:kind',({params,query})=>commercialList(db,params.kind,query),{accountant:true});
   route('GET','/api/purchases',()=>listPurchases(db),{accountant:true});
   route('GET','/api/purchases/:id/html',({params})=>{const p=purchaseDetails(db,params.id),snapshot=db.prepare('SELECT supplier FROM purchase_snapshots WHERE purchase_id=?').get(p.id);return new Raw(commercialPrint({title:p.kind==='return'?'مرتجع شراء':'سند تسجيل فاتورة مورد',number:p.number,date:p.document_date,company:getSetting(db,'company'),party:snapshot?JSON.parse(snapshot.supplier):null,headers:['الوصف','الوحدة','الكمية','سعر الوحدة','الصافي','الضريبة'],rows:p.lines.map(l=>[l.description,l.unit_name,l.qty,l.unit_price,l.net,l.vat]),totals:[['قبل الضريبة',p.subtotal],['الضريبة',p.vat],['الإجمالي',p.total]],notes:'مرجع المورد: '+p.supplier_reference+' · '+p.notes,settings:getSetting(db,'invoice')}));},{accountant:true});
   route('GET','/api/vouchers/:id/html',({params})=>{const v=db.prepare('SELECT * FROM cash_vouchers WHERE id=?').get(params.id);need(v,'السند غير موجود');return new Raw(commercialPrint({title:v.kind==='receipt'?'سند قبض':'سند صرف',number:v.number,date:v.voucher_date,company:getSetting(db,'company'),party:db.prepare('SELECT name_ar FROM parties WHERE id=?').get(v.party_id),headers:['الحساب','البيان','المبلغ'],rows:[[v.cash_account,v.notes,v.amount/100]],totals:[['قيمة السند',v.amount/100]],settings:getSetting(db,'invoice')}));},{accountant:true});
-  route('GET','/api/quotations',()=>db.prepare('SELECT id,number,document_date,valid_until,status,total,invoice_id FROM quotations ORDER BY id DESC LIMIT 500').all(),{accountant:true});
+  route('GET','/api/quotations',()=>db.prepare('SELECT id,number,document_date,valid_until,status,total,invoice_id FROM quotations ORDER BY id DESC').all(),{accountant:true});
   route('POST','/api/quotations',({body,user})=>createQuotation(db,user.id,body),{accountant:true});
   route('POST','/api/quotations/:id/convert',({params,user,body})=>convertQuotation(db,user.id,params.id,body),{accountant:true});
   route('POST','/api/quotations/:id/cancel',({params,user})=>cancelQuotation(db,user.id,params.id),{accountant:true});
   route('GET','/api/quotations/:id/html',({params})=>{const q=quotation(db,params.id);return new Raw(commercialPrint({title:'عرض سعر',number:q.number,date:q.document_date,company:q.company,party:q.party,headers:['الوصف','الكمية','سعر الوحدة الصافي','الخصم %','الصافي','الضريبة'],rows:q.lines.map(l=>[l.input.description,l.input.qty,l.calculated.unit_price/100,l.calculated.discount_rate/100,l.calculated.net/100,l.calculated.vat/100]),totals:[['قبل الضريبة',q.subtotal/100],['الضريبة',q.vat/100],['الإجمالي',q.total/100]],notes:'صالح حتى '+q.valid_until+' · '+q.notes,settings:getSetting(db,'invoice')}));},{accountant:true});
   route('GET','/api/purchases/:id',({params})=>purchaseDetails(db,params.id),{accountant:true});
   route('POST','/api/purchases',({body,user})=>createPurchase(db,user.id,body),{accountant:true});
-  route('GET','/api/vouchers',()=>db.prepare('SELECT v.*,p.name_ar party FROM cash_vouchers v JOIN parties p ON p.id=v.party_id ORDER BY v.id DESC LIMIT 500').all().map(v=>({...v,amount:v.amount/100})),{accountant:true});
+  route('GET','/api/vouchers',()=>db.prepare('SELECT v.*,p.name_ar party FROM cash_vouchers v JOIN parties p ON p.id=v.party_id ORDER BY v.id DESC').all().map(v=>({...v,amount:v.amount/100})),{accountant:true});
   route('POST','/api/vouchers',({body,user})=>createVoucher(db,user.id,body),{accountant:true});
   route('GET','/api/parties/:id/ledger',({params})=>partyLedger(db,Number(params.id)),{accountant:true});
   route('GET','/api/accounts',()=>db.prepare('SELECT * FROM accounts ORDER BY code').all(),{accountant:true});
-  route('GET','/api/journals',()=>db.prepare('SELECT e.*,l.account_code,a.name_ar account,l.debit,l.credit,x.party_id,p.name_ar party FROM journal_entries e JOIN journal_lines l ON l.entry_id=e.id JOIN accounts a ON a.code=l.account_code LEFT JOIN journal_party_links x ON x.line_id=l.id LEFT JOIN parties p ON p.id=x.party_id ORDER BY e.id DESC,l.id LIMIT 2000').all().map(l=>({...l,debit:l.debit/100,credit:l.credit/100})),{accountant:true});
+  route('GET','/api/journals',()=>db.prepare('SELECT e.*,l.account_code,a.name_ar account,l.debit,l.credit,x.party_id,p.name_ar party FROM journal_entries e JOIN journal_lines l ON l.entry_id=e.id JOIN accounts a ON a.code=l.account_code LEFT JOIN journal_party_links x ON x.line_id=l.id LEFT JOIN parties p ON p.id=x.party_id ORDER BY e.id DESC,l.id').all().map(l=>({...l,debit:l.debit/100,credit:l.credit/100})),{accountant:true});
   route('POST','/api/journals',({body,user})=>postManualJournal(db,user.id,body),{accountant:true});
   route('GET','/api/accounting/lock',()=>db.prepare('SELECT * FROM accounting_locks WHERE id=1').get()||null,{owner:true});
   route('POST','/api/accounting/lock',({body,user})=>{const date=validDate(body.closed_through),old=db.prepare('SELECT closed_through FROM accounting_locks WHERE id=1').get();need(!old||date>old.closed_through,'الإقفال يتقدم فقط ولا يعيد فتح الفترات');db.prepare('INSERT INTO accounting_locks(id,closed_through,actor_id) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET closed_through=excluded.closed_through,actor_id=excluded.actor_id,created_at=CURRENT_TIMESTAMP').run(date,user.id);return{ok:true};},{owner:true});
   route('POST','/api/items',({body,user})=>saveItem(db,body,null,user.id));
   route('PUT','/api/items/:id',({params,body,user})=>saveItem(db,body,Number(params.id),user.id));
   route('GET','/api/warehouses',()=>db.prepare('SELECT * FROM warehouses ORDER BY id').all());
-  route('GET','/api/inventory/valuation',()=>stockValuation(db),{accountant:true});
+  route('GET','/api/inventory/valuation',()=>jobs.report('valuation'),{accountant:true});
   route('POST','/api/warehouses',({body})=>{const name=String(body.name||'').trim();need(name&&name.length<=100,'اسم المستودع مطلوب');return {id:db.prepare('INSERT INTO warehouses(name) VALUES(?)').run(name).lastInsertRowid};},{owner:true});
   route('PUT','/api/pos/:id/warehouse',({params,body})=>{need(db.prepare('SELECT 1 FROM warehouses WHERE id=? AND active=1').get(body.warehouse_id),'اختر مستودعًا فعالًا');need(db.prepare('SELECT 1 FROM pos_points WHERE id=?').get(params.id),'نقطة البيع غير موجودة');db.prepare('UPDATE pos_points SET warehouse_id=? WHERE id=?').run(body.warehouse_id,params.id);return {ok:true};},{owner:true});
-  route('GET','/api/inventory/balances',()=>db.prepare('SELECT i.id item_id,i.name_ar,i.base_unit,i.reorder_micro,w.id warehouse_id,w.name warehouse,COALESCE(m.qty_micro,0) qty_micro FROM items i CROSS JOIN warehouses w LEFT JOIN stock_positions m ON m.item_id=i.id AND m.warehouse_id=w.id WHERE i.track_stock=1 ORDER BY i.name_ar,w.id').all().map(r=>({...r,qty:r.qty_micro/1000000,reorder_qty:r.reorder_micro/1000000})));
-  route('GET','/api/inventory/movements',({query})=>{need(Number.isSafeInteger(Number(query.item_id))&&Number(query.item_id)>0,'اختر صنفًا');return db.prepare('SELECT m.*,w.name warehouse,i.number invoice_number FROM stock_movements m JOIN warehouses w ON w.id=m.warehouse_id LEFT JOIN invoices i ON i.id=m.invoice_id WHERE m.item_id=? ORDER BY m.id DESC LIMIT 300').all(Number(query.item_id)).map(r=>({...r,qty:r.delta_micro/1000000}));});
+  route('GET','/api/inventory/balances',({query})=>db.prepare('SELECT i.id item_id,i.name_ar,i.base_unit,i.reorder_micro,w.id warehouse_id,w.name warehouse,COALESCE(m.qty_micro,0) qty_micro FROM items i CROSS JOIN warehouses w LEFT JOIN stock_positions m ON m.item_id=i.id AND m.warehouse_id=w.id WHERE i.track_stock=1 AND (? IS NULL OR i.id=?) ORDER BY i.name_ar,w.id').all(query.item_id?Number(query.item_id):null,query.item_id?Number(query.item_id):null).map(r=>({...r,qty:r.qty_micro/1000000,reorder_qty:r.reorder_micro/1000000})));
+  route('GET','/api/inventory/movements',({query})=>{need(Number.isSafeInteger(Number(query.item_id))&&Number(query.item_id)>0,'اختر صنفًا');return db.prepare('SELECT m.*,w.name warehouse,i.number invoice_number FROM stock_movements m JOIN warehouses w ON w.id=m.warehouse_id LEFT JOIN invoices i ON i.id=m.invoice_id WHERE m.item_id=? ORDER BY m.id DESC').all(Number(query.item_id)).map(r=>({...r,qty:r.delta_micro/1000000}));});
   route('POST','/api/inventory/movements',({body,user})=>recordStock(db,body,user.id));
   route('GET','/api/pos/catalog',()=>posCatalog(db),{cashier:true});
-  route('GET','/api/pos/shifts',({user})=>db.prepare('SELECT * FROM pos_shifts '+(user.role==='staff'?'WHERE user_id=? ':'')+'ORDER BY id DESC LIMIT 100').all(...(user.role==='staff'?[user.id]:[])).map(s=>shiftSummary(db,s)),{cashier:true});
+  route('GET','/api/pos/shifts',({user})=>db.prepare('SELECT * FROM pos_shifts '+(user.role==='staff'?'WHERE user_id=? ':'')+'ORDER BY id DESC').all(...(user.role==='staff'?[user.id]:[])).map(s=>shiftSummary(db,s)),{cashier:true});
   route('POST','/api/pos/shifts',({body,user})=>openShift(db,user,body),{cashier:true});
   route('POST','/api/pos/shifts/:id/close',({params,body,user})=>closeShift(db,user,params.id,body),{cashier:true});
   route('POST','/api/pos/returns',({body,user})=>posReturn(db,user,body),{cashier:true});
+  route('GET','/api/pos/shifts/page',({user,query})=>shiftList(db,user,query),{cashier:true});
   route('GET','/api/pos/control',()=>getSetting(db,'pos_control'),{cashier:true});
-  route('GET','/api/stocktakes',()=>db.prepare('SELECT s.*,w.name warehouse FROM stocktakes s JOIN warehouses w ON w.id=s.warehouse_id ORDER BY s.id DESC LIMIT 100').all());
+  route('GET','/api/stocktakes',()=>db.prepare('SELECT s.*,w.name warehouse FROM stocktakes s JOIN warehouses w ON w.id=s.warehouse_id ORDER BY s.id DESC').all());
   route('GET','/api/stocktakes/:id',({params})=>{const row=db.prepare('SELECT * FROM stocktakes WHERE id=?').get(params.id);need(row,'الجرد غير موجود');return{...row,lines:db.prepare('SELECT l.*,i.name_ar FROM stocktake_lines l JOIN items i ON i.id=l.item_id WHERE l.stocktake_id=?').all(row.id)};});
-  route('GET','/api/pos/history',({user})=>db.prepare("SELECT id,number,total,type,document_code FROM invoices WHERE status='issued' "+(user.role==='staff'?'AND created_by=? AND pos_id IN (SELECT pos_id FROM pos_user_access WHERE user_id=?) ':'')+'ORDER BY id DESC LIMIT 100').all(...(user.role==='staff'?[user.id,user.id]:[])),{cashier:true});
+  route('GET','/api/pos/history/page',({user,query})=>posHistoryList(db,user,query),{cashier:true});
+  route('GET','/api/pos/history',({user})=>db.prepare("SELECT id,number,total,type,document_code FROM invoices WHERE status='issued' "+(user.role==='staff'?'AND created_by=? AND pos_id IN (SELECT pos_id FROM pos_user_access WHERE user_id=?) ':'')+'ORDER BY id DESC').all(...(user.role==='staff'?[user.id,user.id]:[])),{cashier:true});
   route('POST','/api/stocktakes',({body,user})=>createStocktake(db,user,body));
   route('POST','/api/stocktakes/:id/approve',({params,user})=>approveStocktake(db,user,params.id),{owner:true});
   route('GET','/api/pos/customers',()=>db.prepare("SELECT id,name_ar FROM parties WHERE kind IN ('customer','both') ORDER BY name_ar").all(),{cashier:true});
@@ -178,7 +182,7 @@ export function createApp({ dbFile, licensePath }) {
 
   // ---------- الفواتير ----------
   route('GET', '/api/invoices', () => db.prepare(`SELECT i.id,i.number,i.type,i.document_code,i.invoice_kind,i.environment,i.status,i.issue_date,i.total,p.name_ar party FROM invoices i
-    LEFT JOIN parties p ON p.id=i.party_id ORDER BY i.id DESC LIMIT 200`).all().map(r => ({ ...r, total: fromCents(r.total) })));
+    LEFT JOIN parties p ON p.id=i.party_id ORDER BY i.id DESC`).all().map(r => ({ ...r, total: fromCents(r.total) })));
   route('POST', '/api/invoices', ({ body, user }) => ({ id: createInvoice(db, user.id, body) }));
   route('GET', '/api/invoices/:id', ({ params,user }) => { const i = getInvoice(db, params.id); need(i, 'غير موجودة'); if(user.role==='staff'&&Number(i.created_by)!==user.id)throw new HttpError(403,'يمكنك عرض مبيعاتك فقط');return i; },{cashier:true});
   route('POST', '/api/invoices/:id/issue', ({ params }) => ({ id: issueInvoice(db, Number(params.id)) }));
@@ -195,8 +199,9 @@ export function createApp({ dbFile, licensePath }) {
 
 
   route('GET','/api/compliance/status',()=>({mode:getSetting(db,'compliance').mode,seller_errors:validateIdentity(getSetting(db,'company')),...jobs.auditStatus(db),production_ready:false,official_sdk_validated:false,certificate_configured:false,blocked:db.prepare("SELECT COUNT(*) n FROM regulatory_queue WHERE state='blocked'").get().n,remaining:['تنزيل SDK الرسمي وقبول شروطه وتشغيل التحقق','توليد CSR وتهيئة شهادة الجهاز وحماية مفتاحه','إكمال التوقيع XAdES وQR المرحلة الثانية والتحقق منهما','اختبار أنواع الفواتير والإشعارات في بيئة الهيئة','اعتماد إعداد الإنتاج بعد نجاح الاختبارات']}),{owner:true});
-  route('GET','/api/compliance/queue',()=>db.prepare('SELECT q.*,i.number,i.invoice_kind,i.environment FROM regulatory_queue q JOIN invoices i ON i.id=q.invoice_id ORDER BY i.id DESC LIMIT 200').all(),{owner:true});
-  route('GET','/api/compliance/audit',()=>db.prepare('SELECT id,actor_id,event,entity_type,entity_id,hash,created_at FROM audit_events ORDER BY id DESC LIMIT 100').all(),{owner:true});
+  route('GET','/api/compliance/lists/:kind',({params,query})=>complianceList(db,params.kind,query),{owner:true});
+  route('GET','/api/compliance/queue',()=>db.prepare('SELECT q.*,i.number,i.invoice_kind,i.environment FROM regulatory_queue q JOIN invoices i ON i.id=q.invoice_id ORDER BY i.id DESC').all(),{owner:true});
+  route('GET','/api/compliance/audit',()=>db.prepare('SELECT id,actor_id,event,entity_type,entity_id,hash,created_at FROM audit_events ORDER BY id DESC').all(),{owner:true});
   route('GET','/api/invoices/:id/xml',({params})=>{const d=db.prepare("SELECT content FROM invoice_documents WHERE invoice_id=? AND kind='xml_candidate'").get(params.id);need(d,'لا يوجد XML مؤرشف لهذا المستند');return new Raw(d.content,'application/xml; charset=utf-8',{'Content-Disposition':'attachment; filename="development-invoice-'+Number(params.id)+'.xml"'});},{accountant:true});
   route('POST','/api/invoices/:id/debit-note',({params,user,body})=>({id:createDebitNote(db,user.id,Number(params.id),body)}),{accountant:true});
 
@@ -205,11 +210,11 @@ export function createApp({ dbFile, licensePath }) {
     const m = nowRiyadh().date.slice(0, 7);
     const t = db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(CASE type WHEN '381' THEN -subtotal ELSE subtotal END),0) sub,
       COALESCE(SUM(CASE type WHEN '381' THEN -vat ELSE vat END),0) vat FROM invoices WHERE status='issued' AND issue_date LIKE ?`).get(m + '%');
-    return { month: m, invoices: t.n, sales: fromCents(t.sub), vat: fromCents(t.vat) };
+    return { month: m, invoices: t.n, drafts:db.prepare("SELECT COUNT(*) n FROM invoices WHERE status='draft'").get().n, sales: fromCents(t.sub), vat: fromCents(t.vat) };
   });
-  route('GET', '/api/reports/trial-balance', () => trialBalance(db), { accountant: true });
-  route('GET','/api/reports/financial',({query})=>financialReport(db,query.from,query.to),{accountant:true});
-  route('GET', '/api/reports/vat', ({ query }) => { need(/^\d{4}-\d{2}-\d{2}$/.test(query.from || '') && /^\d{4}-\d{2}-\d{2}$/.test(query.to || ''), 'حدد الفترة (from/to بصيغة YYYY-MM-DD)'); return vatReport(db, query.from, query.to); }, { accountant: true });
+  route('GET', '/api/reports/trial-balance', () => jobs.report('trial'), { accountant: true });
+  route('GET','/api/reports/financial',({query})=>{validDate(query.from);validDate(query.to);return jobs.report('financial',query.from,query.to);},{accountant:true});
+  route('GET', '/api/reports/vat', ({ query }) => { need(/^\d{4}-\d{2}-\d{2}$/.test(query.from || '') && /^\d{4}-\d{2}-\d{2}$/.test(query.to || ''), 'حدد الفترة (from/to بصيغة YYYY-MM-DD)'); return jobs.report('vat',query.from,query.to); }, { accountant: true });
   route('GET','/api/compliance/audit/verify',()=>jobs.audit(),{owner:true});
   route('GET', '/api/backup', async () => new FileRaw(await jobs.backup(), { 'Content-Disposition': `attachment; filename="almuhtariz-backup-${new Date().toISOString().slice(0,10)}.db"` }), { owner: true });
   route('POST', '/api/license', ({ body }) => {

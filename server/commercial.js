@@ -69,7 +69,7 @@ export function createPurchase(db,actor,body){return tx(db,()=>{
  appendAudit(db,{actor,event:returning?'purchase.returned':'purchase.posted',entity_type:'purchase',entity_id:id,details:{number,total}});
  return{id,replayed:false};
 });}
-export function listPurchases(db){return db.prepare('SELECT p.*,s.name_ar supplier FROM purchases p JOIN parties s ON s.id=p.supplier_id ORDER BY p.id DESC LIMIT 500').all().map(p=>({...p,subtotal:p.subtotal/100,vat:p.vat/100,total:p.total/100}));}
+export function listPurchases(db){return db.prepare('SELECT p.*,s.name_ar supplier FROM purchases p JOIN parties s ON s.id=p.supplier_id ORDER BY p.id DESC').all().map(p=>({...p,subtotal:p.subtotal/100,vat:p.vat/100,total:p.total/100}));}
 export function purchaseDetails(db,id){const p=db.prepare('SELECT p.*,s.name_ar supplier FROM purchases p JOIN parties s ON s.id=p.supplier_id WHERE p.id=?').get(identifier(id));if(!p)throw Error('مستند الشراء غير موجود');return{...p,subtotal:p.subtotal/100,vat:p.vat/100,total:p.total/100,lines:db.prepare('SELECT * FROM purchase_lines WHERE purchase_id=? ORDER BY line_no').all(p.id).map(l=>({...l,qty:l.qty_micro/1000000,unit_price:l.unit_price/100,vat_rate:l.vat_rate/100,net:l.net/100,vat:l.vat/100,remaining_qty:(l.qty_micro-db.prepare("SELECT COALESCE(SUM(l.qty_micro),0) n FROM purchase_lines l JOIN purchases r ON r.id=l.purchase_id WHERE r.kind='return' AND r.ref_purchase_id=? AND l.line_no=?").get(p.id,l.line_no).n)/1000000}))};}
 export function partyLedger(db,id){
  identifier(id);return db.prepare(`SELECT e.entry_date,e.entry_no,e.description,l.account_code,l.debit,l.credit FROM journal_lines l JOIN journal_entries e ON e.id=l.entry_id LEFT JOIN journal_party_links x ON x.line_id=l.id LEFT JOIN invoices i ON e.source_type='invoice' AND i.id=e.source_id WHERE x.party_id=? OR (x.party_id IS NULL AND i.party_id=? AND l.account_code='1201') ORDER BY e.entry_date,e.id,l.id`).all(id,id).map(l=>({...l,debit:l.debit/100,credit:l.credit/100}));
@@ -97,8 +97,11 @@ export function postManualJournal(db,actor,body){return tx(db,()=>{
 });}
 export function financialReport(db,from,to){
  validDate(from);validDate(to);if(from>to)throw Error('بداية الفترة تتجاوز نهايتها');
- const rows=db.prepare(`SELECT a.code,a.name_ar,a.type,COALESCE(SUM(CASE WHEN e.entry_date<? THEN l.debit-l.credit ELSE 0 END),0) opening,COALESCE(SUM(CASE WHEN e.entry_date BETWEEN ? AND ? THEN l.debit ELSE 0 END),0) debit,COALESCE(SUM(CASE WHEN e.entry_date BETWEEN ? AND ? THEN l.credit ELSE 0 END),0) credit FROM accounts a LEFT JOIN journal_lines l ON l.account_code=a.code LEFT JOIN journal_entries e ON e.id=l.entry_id GROUP BY a.code ORDER BY a.code`).all(from,from,to,from,to);
+ const rows=db.prepare(FINANCIAL_SQL).all(from,from,from,to);
+ for(const r of rows)if(![r.opening,r.debit,r.credit,r.opening+r.debit-r.credit].every(Number.isSafeInteger))throw Error('إجمالي التقرير أكبر من الدقة المسموحة');
  const revenue=rows.filter(r=>r.type==='revenue').reduce((s,r)=>s+r.credit-r.debit,0),expenses=rows.filter(r=>r.type==='expense').reduce((s,r)=>s+r.debit-r.credit,0);
- const incomplete=db.prepare('SELECT COUNT(*) n FROM stock_values WHERE costed=0').get().n;
- return{from,to,rows:rows.map(r=>({...r,opening:r.opening/100,debit:r.debit/100,credit:r.credit/100,closing:(r.opening+r.debit-r.credit)/100})),revenue:revenue/100,expenses:expenses/100,profit:(revenue-expenses)/100,costing_complete:incomplete===0};
+ const incomplete=Boolean(db.prepare('SELECT 1 FROM stock_values WHERE costed=0 LIMIT 1').get());
+ return{from,to,rows:rows.map(r=>({...r,opening:r.opening/100,debit:r.debit/100,credit:r.credit/100,closing:(r.opening+r.debit-r.credit)/100})),revenue:revenue/100,expenses:expenses/100,profit:(revenue-expenses)/100,costing_complete:!incomplete};
 }
+
+export const FINANCIAL_SQL=`WITH totals AS (SELECT l.account_code,SUM(CASE WHEN e.entry_date<? THEN l.debit-l.credit ELSE 0 END) opening,SUM(CASE WHEN e.entry_date>=? THEN l.debit ELSE 0 END) debit,SUM(CASE WHEN e.entry_date>=? THEN l.credit ELSE 0 END) credit FROM journal_entries e INDEXED BY journal_entries_by_date CROSS JOIN journal_lines l INDEXED BY journal_lines_by_entry ON l.entry_id=e.id WHERE e.entry_date<=? GROUP BY l.account_code) SELECT a.code,a.name_ar,a.type,COALESCE(t.opening,0) opening,COALESCE(t.debit,0) debit,COALESCE(t.credit,0) credit FROM accounts a LEFT JOIN totals t ON t.account_code=a.code ORDER BY a.code`;
