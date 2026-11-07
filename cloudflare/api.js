@@ -15,6 +15,12 @@ async function upstream(env, path, { token, method = 'GET', body, admin=false } 
   try { response = await fetch(c.url + path, { method, redirect: 'manual', signal: AbortSignal.timeout(12000), headers: { apikey: key, ...(token ? { Authorization: 'Bearer ' + token } : admin&&key.startsWith('eyJ')?{Authorization:'Bearer '+key}:{}), ...(body ? { 'Content-Type': 'application/json',Prefer:'return=representation' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }); }
   catch (error) { const failure=new ApiError(503, 'تعذر الاتصال بالخدمة السحابية. حاول مجددًا.'); failure.code=error.name==='TimeoutError'?'UPSTREAM_TIMEOUT':'UPSTREAM_NETWORK_ERROR';throw failure; }
   if (!response.ok) {
+    if(path.startsWith('/rest/v1/rpc/cloud_')){
+      const details=await response.json().catch(()=>null);
+      if(['PT400','PT404','PT409'].includes(details?.code))throw new ApiError(Number(details.code.slice(2)),details.message);
+      if(response.status===403)throw new ApiError(403,'لا توجد صلاحية لهذه العملية داخل المنشأة.');
+      if(response.status===404)throw new ApiError(503,'إدارة المنشآت تحتاج ترحيل قاعدة البيانات.');
+    }
     if ([400,401].includes(response.status)) throw new ApiError(401, 'تعذر تسجيل الدخول أو انتهت الجلسة. تحقق من البريد وكلمة المرور.');
     if (response.status === 403) throw new ApiError(403, 'لا توجد صلاحية لهذه العملية.');
     if (response.status === 429) throw new ApiError(429, 'محاولات كثيرة. انتظر قليلًا ثم أعد المحاولة.');
@@ -43,6 +49,26 @@ async function identity(env, token) {
   if (!user?.id) throw new ApiError(401, 'جلسة غير صالحة.');
   const members = await upstream(env, '/rest/v1/organization_members?select=organization_id,role&user_id=eq.' + encodeURIComponent(user.id) + '&active=eq.true', { token });
   return { user, members };
+}
+const uuid = value => typeof value==='string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
+const rpc = (env,token,name,args) => upstream(env,'/rest/v1/rpc/'+name,{token,method:'POST',body:args});
+function managementCommand(input, org) {
+  const { action, id, name, activity, address, active, branch_id, prefix, role, email, pos_ids, end_sessions } = input;
+  if(!uuid(org)||(id!=null&&!uuid(id)))throw new ApiError(400,'معرف المنشأة أو السجل غير صالح.');
+  if(action==='organization'&&typeof name==='string'&&typeof activity==='string'){
+    return ['cloud_update_organization',{p_org:org,p_name:name,p_activity:activity}];
+  }
+  if(action==='branch'&&typeof name==='string'&&(address==null||typeof address==='string')&&typeof active==='boolean'){
+    return ['cloud_save_branch',{p_org:org,p_id:id??null,p_name:name,p_address:address??null,p_active:active}];
+  }
+  if(action==='point'&&uuid(branch_id)&&typeof name==='string'&&typeof prefix==='string'&&typeof active==='boolean'){
+    return ['cloud_save_pos',{p_org:org,p_id:id??null,p_branch:branch_id,p_name:name,p_prefix:prefix,p_active:active}];
+  }
+  if(action==='member'&&(id||typeof email==='string')&&typeof role==='string'&&typeof active==='boolean'
+    &&Array.isArray(pos_ids)&&pos_ids.length<=100&&pos_ids.every(uuid)&&typeof end_sessions==='boolean'){
+    return ['cloud_save_member',{p_org:org,p_user:id??null,p_email:id?null:email,p_role:role,p_active:active,p_pos_ids:pos_ids,p_end_sessions:end_sessions}];
+  }
+  throw new ApiError(400,'بيانات الإدارة غير صالحة.');
 }
 export async function cloudApi(request, env) {
   const url = new URL(request.url), path = url.pathname;
@@ -87,21 +113,20 @@ export async function cloudApi(request, env) {
         return json({ mode: 'cloud', setup_needed: false, user: null, activity: '' }, 200, { 'Set-Cookie': cookie('', 0) });
       }
     }
-    if(path==='/api/cloud/devices'){
+    if(path==='/api/cloud/manage'||path==='/api/cloud/devices'){
       const {members}=await identity(env,token),input=request.method==='POST'?await body(request):{},org=input.organization_id||url.searchParams.get('organization_id')||members[0]?.organization_id;
-      if(!members.some(m=>m.organization_id===org&&m.role==='owner'))throw new ApiError(403,'ربط الأجهزة لمالك المنشأة فقط.');
-      const branches=await upstream(env,'/rest/v1/branches?select=id,name&organization_id=eq.'+encodeURIComponent(org),{token});
-      if(request.method==='GET'){
-        const devices=await upstream(env,'/rest/v1/branch_devices?select=id,active,created_at,last_sequence&organization_id=eq.'+encodeURIComponent(org),{admin:true});return json({branches,devices});
+      if(!members.some(m=>m.organization_id===org&&m.role==='owner'))throw new ApiError(403,'صلاحيات مالك المنشأة مطلوبة.');
+      if(path==='/api/cloud/manage'){
+        if(request.method==='GET')return json(await rpc(env,token,'cloud_admin_overview',{p_org:org}));
+        const [name,args]=managementCommand(input,org);
+        const id=await rpc(env,token,name,args);
+        return json({ok:true,id});
       }
-      if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.installation_id||'')||!branches.some(b=>b.id===input.branch_id))throw new ApiError(400,'اختر الفرع وأدخل معرف النسخة المحلية الصحيح.');
-      const existing=await upstream(env,'/rest/v1/installations?select=id,organization_id,branch_id&id=eq.'+input.installation_id,{admin:true});
-      if(existing.length&&(!existing.some(i=>i.organization_id===org&&i.branch_id===input.branch_id)))throw new ApiError(409,'معرف النسخة مستخدم في فرع أو منشأة أخرى.');
-      const devices=await upstream(env,'/rest/v1/branch_devices?select=id&id=eq.'+input.installation_id,{admin:true});if(devices.length)throw new ApiError(409,'هذه النسخة مرتبطة مسبقًا. لا يُعاد عرض رمزها؛ يلزم مسار تدوير معتمد إن فُقد.');
-      if(!existing.length)await upstream(env,'/rest/v1/installations',{admin:true,method:'POST',body:{id:input.installation_id,organization_id:org,branch_id:input.branch_id}});
+      if(request.method==='GET')return json(await rpc(env,token,'cloud_devices',{p_org:org}));
+      if(!uuid(input.installation_id)||!uuid(input.branch_id))throw new ApiError(400,'اختر الفرع وأدخل معرف النسخة المحلية الصحيح.');
       const secret=btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
       const tokenHash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(secret))),b=>b.toString(16).padStart(2,'0')).join('');
-      await upstream(env,'/rest/v1/branch_devices',{admin:true,method:'POST',body:{id:input.installation_id,organization_id:org,token_hash:tokenHash}});
+      await rpc(env,token,'cloud_link_device',{p_org:org,p_branch:input.branch_id,p_installation:input.installation_id,p_token_hash:tokenHash});
       return json({device_token:input.installation_id+'.'+secret,installation_id:input.installation_id});
     }
     if (path === '/api/cloud/overview' && request.method === 'GET') {
@@ -111,15 +136,21 @@ export async function cloudApi(request, env) {
       if (!member || !['owner','accountant','staff'].includes(member.role)) throw new ApiError(403, 'حسابك غير مرتبط بمنشأة مفعّلة بعد.');
       const suffix = '&organization_id=eq.' + encodeURIComponent(org);
       const read = query => upstream(env, '/rest/v1/' + query + suffix, { token });
+      const selected=url.searchParams.get('installation_id');
+      if(selected&&!uuid(selected))throw new ApiError(400,'معرف نسخة الفرع غير صالح.');
+      if(member.role==='staff'){
+        const catalog=await rpc(env,token,'cloud_staff_catalog',{p_org:org,p_installation:selected});
+        return json({role:member.role,organization_id:org,items:catalog.items,branches:catalog.branches,
+          installation_id:catalog.installation_id,invoices:[],parties:[],organizations:[],read_only:true});
+      }
       const items = await read('items?select=id,name_ar,barcode,unit_price,vat_rate,base_unit,active&active=eq.true&order=name_ar&limit=100');
-      if (member.role === 'staff') return json({ role: member.role, organization_id: org, items, invoices: [], parties: [], organizations: [], read_only: true });
       const [organizations, invoices, parties] = await Promise.all([
         upstream(env, '/rest/v1/organizations?select=id,name_ar,activity&id=eq.' + encodeURIComponent(org), { token }),
         read('invoices?select=id,number,status,document_code,issue_date,total&order=created_at.desc&limit=100'),
         read('parties?select=id,name_ar,kind&order=name_ar&limit=100')
       ]);
       const snapshots=await upstream(env,'/rest/v1/branch_snapshots?select=installation_id,received_at,payload&organization_id=eq.'+encodeURIComponent(org)+'&order=received_at.desc&limit=20',{token});
-      const selected=url.searchParams.get('installation_id'),snapshot=selected?snapshots.find(s=>s.installation_id===selected):snapshots[0];
+      const snapshot=selected?snapshots.find(s=>s.installation_id===selected):snapshots[0];
       if(selected&&!snapshot)throw new ApiError(403,'نسخة الفرع غير متاحة لهذا الحساب.');
       if(snapshot){const tables=snapshot.payload.tables;return json({role:member.role,organization_id:org,items:tables.items.filter(i=>i.active).slice(0,100).map(i=>({id:i.id,name_ar:i.name_ar,barcode:i.barcode,base_unit:i.base_unit,unit_price:Math.round(i.unit_price*100)})),invoices:tables.invoices.slice(-100).reverse(),parties:tables.parties.slice(0,100),organizations,read_only:true,snapshot:{installation_id:snapshot.installation_id,received_at:snapshot.received_at},branches:snapshots.map(s=>({id:s.installation_id,received_at:s.received_at}))});}
       return json({ role: member.role, organization_id: org, items, invoices, parties, organizations, read_only: true });
