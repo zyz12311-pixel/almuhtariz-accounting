@@ -1,0 +1,369 @@
+{
+  "created_at": "2026-11-07T00:45:32.806Z",
+  "node": "v26.13.0",
+  "sqlite": "3.54.0",
+  "platform": "win32",
+  "cpu": "Intel(R) Core(TM) i5-1035G1 CPU @ 1.00GHz",
+  "logical_cpus": 8,
+  "total_memory_mb": 7974,
+  "fixture_kind": "synthetic materialized history; not fiscally valid invoices; one hot stock item plus 999 empty items; balanced ledger; real audit chain",
+  "historical_seeding_excluded": true,
+  "fixtures": [
+    {
+      "history_rows": 1000,
+      "catalog_items": 1000,
+      "journal_lines": 2000,
+      "seed_ms": 1837.6327999999999,
+      "metrics": {
+        "balance": {
+          "samples": 9,
+          "p50_ms": 0.08559999999988577,
+          "p95_ms": 0.11249999999995453,
+          "max_ms": 0.11249999999995453
+        },
+        "stock_write": {
+          "samples": 9,
+          "p50_ms": 43.890499999999975,
+          "p95_ms": 56.338700000000244,
+          "max_ms": 56.338700000000244
+        },
+        "purchase_write": {
+          "samples": 9,
+          "p50_ms": 45.04289999999992,
+          "p95_ms": 55.865600000000086,
+          "max_ms": 55.865600000000086
+        },
+        "audit_verify": {
+          "samples": 3,
+          "p50_ms": 6.259799999999814,
+          "p95_ms": 18.878200000000106,
+          "max_ms": 18.878200000000106
+        },
+        "catalog": {
+          "samples": 3,
+          "p50_ms": 67.09040000000005,
+          "p95_ms": 70.14049999999997,
+          "max_ms": 70.14049999999997
+        },
+        "financial_report": {
+          "samples": 3,
+          "p50_ms": 1.5551000000000386,
+          "p95_ms": 2.829099999999926,
+          "max_ms": 2.829099999999926
+        },
+        "branch_snapshot": {
+          "samples": 3,
+          "p50_ms": 69.15290000000005,
+          "p95_ms": 70.73379999999997,
+          "max_ms": 70.73379999999997
+        }
+      },
+      "plans": {
+        "balance": [
+          {
+            "id": 4,
+            "parent": 0,
+            "notused": 60,
+            "detail": "SEARCH stock_movements USING INDEX stock_by_item_warehouse (item_id=? AND warehouse_id=?)"
+          }
+        ],
+        "report": [
+          {
+            "id": 9,
+            "parent": 0,
+            "notused": 212,
+            "detail": "SCAN a USING COVERING INDEX sqlite_autoindex_accounts_1"
+          },
+          {
+            "id": 11,
+            "parent": 0,
+            "notused": 62,
+            "detail": "SEARCH l USING INDEX ix_jl_acc (account_code=?) LEFT-JOIN"
+          },
+          {
+            "id": 19,
+            "parent": 0,
+            "notused": 45,
+            "detail": "SEARCH e USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN"
+          }
+        ]
+      },
+      "snapshot_bytes": 1238388,
+      "database_bytes": 1425408,
+      "memory_rss_mb": 80,
+      "http": {
+        "idle_state_p50_ms": 3.81230000000005,
+        "idle_state_p95_ms": 6.173099999999977,
+        "during_audit": {
+          "heavy": {
+            "elapsed_ms": 22.634700000000066,
+            "bytes": 1071
+          },
+          "state_p50_ms": 29.929899999999634,
+          "state_p95_ms": 34.82790000000023,
+          "failures": []
+        },
+        "during_backup": {
+          "heavy": {
+            "elapsed_ms": 250.1871000000001,
+            "bytes": 1404928
+          },
+          "state_p50_ms": 252.03729999999996,
+          "state_p95_ms": 257.67639999999983,
+          "failures": []
+        }
+      }
+    },
+    {
+      "history_rows": 10000,
+      "catalog_items": 1000,
+      "journal_lines": 20000,
+      "seed_ms": 3208.5290999999997,
+      "metrics": {
+        "balance": {
+          "samples": 9,
+          "p50_ms": 0.7359999999998763,
+          "p95_ms": 0.8813000000000102,
+          "max_ms": 0.8813000000000102
+        },
+        "stock_write": {
+          "samples": 9,
+          "p50_ms": 22.76720000000023,
+          "p95_ms": 33.919299999999566,
+          "max_ms": 33.919299999999566
+        },
+        "purchase_write": {
+          "samples": 9,
+          "p50_ms": 32.702800000000025,
+          "p95_ms": 45.11710000000039,
+          "max_ms": 45.11710000000039
+        },
+        "audit_verify": {
+          "samples": 3,
+          "p50_ms": 45.448199999998906,
+          "p95_ms": 49.27559999999903,
+          "max_ms": 49.27559999999903
+        },
+        "catalog": {
+          "samples": 3,
+          "p50_ms": 67.91979999999967,
+          "p95_ms": 68.60660000000098,
+          "max_ms": 68.60660000000098
+        },
+        "financial_report": {
+          "samples": 3,
+          "p50_ms": 8.726699999999255,
+          "p95_ms": 9.90099999999984,
+          "max_ms": 9.90099999999984
+        },
+        "branch_snapshot": {
+          "samples": 3,
+          "p50_ms": 180.97139999999854,
+          "p95_ms": 191.38760000000002,
+          "max_ms": 191.38760000000002
+        }
+      },
+      "plans": {
+        "balance": [
+          {
+            "id": 4,
+            "parent": 0,
+            "notused": 60,
+            "detail": "SEARCH stock_movements USING INDEX stock_by_item_warehouse (item_id=? AND warehouse_id=?)"
+          }
+        ],
+        "report": [
+          {
+            "id": 9,
+            "parent": 0,
+            "notused": 212,
+            "detail": "SCAN a USING COVERING INDEX sqlite_autoindex_accounts_1"
+          },
+          {
+            "id": 11,
+            "parent": 0,
+            "notused": 62,
+            "detail": "SEARCH l USING INDEX ix_jl_acc (account_code=?) LEFT-JOIN"
+          },
+          {
+            "id": 19,
+            "parent": 0,
+            "notused": 45,
+            "detail": "SEARCH e USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN"
+          }
+        ]
+      },
+      "snapshot_bytes": 8277400,
+      "database_bytes": 9224192,
+      "memory_rss_mb": 233,
+      "http": {
+        "idle_state_p50_ms": 3.3717999999989843,
+        "idle_state_p95_ms": 6.564000000000306,
+        "during_audit": {
+          "heavy": {
+            "elapsed_ms": 64.30019999999968,
+            "bytes": 1071
+          },
+          "state_p50_ms": 70.33870000000024,
+          "state_p95_ms": 74.37840000000142,
+          "failures": []
+        },
+        "during_backup": {
+          "heavy": {
+            "elapsed_ms": 659.9393999999993,
+            "bytes": 8953856
+          },
+          "state_p50_ms": 660.8588,
+          "state_p95_ms": 661.1848000000009,
+          "failures": []
+        }
+      }
+    },
+    {
+      "history_rows": 100000,
+      "catalog_items": 1000,
+      "journal_lines": 200000,
+      "seed_ms": 22074.042500000003,
+      "metrics": {
+        "balance": {
+          "samples": 9,
+          "p50_ms": 18.139299999995274,
+          "p95_ms": 21.17649999999412,
+          "max_ms": 21.17649999999412
+        },
+        "stock_write": {
+          "samples": 9,
+          "p50_ms": 89.54000000000087,
+          "p95_ms": 144.83840000000055,
+          "max_ms": 144.83840000000055
+        },
+        "purchase_write": {
+          "samples": 9,
+          "p50_ms": 100.06850000000122,
+          "p95_ms": 111.84879999999976,
+          "max_ms": 111.84879999999976
+        },
+        "audit_verify": {
+          "samples": 3,
+          "p50_ms": 532.982799999998,
+          "p95_ms": 534.7391999999963,
+          "max_ms": 534.7391999999963
+        },
+        "catalog": {
+          "samples": 3,
+          "p50_ms": 81.73740000000544,
+          "p95_ms": 111.78659999999945,
+          "max_ms": 111.78659999999945
+        },
+        "financial_report": {
+          "samples": 3,
+          "p50_ms": 130.7968000000037,
+          "p95_ms": 145.23509999999806,
+          "max_ms": 145.23509999999806
+        },
+        "branch_snapshot": {
+          "samples": 3,
+          "p50_ms": 1116.5256999999983,
+          "p95_ms": 1144.753300000004,
+          "max_ms": 1144.753300000004
+        }
+      },
+      "plans": {
+        "balance": [
+          {
+            "id": 4,
+            "parent": 0,
+            "notused": 60,
+            "detail": "SEARCH stock_movements USING INDEX stock_by_item_warehouse (item_id=? AND warehouse_id=?)"
+          }
+        ],
+        "report": [
+          {
+            "id": 9,
+            "parent": 0,
+            "notused": 212,
+            "detail": "SCAN a USING COVERING INDEX sqlite_autoindex_accounts_1"
+          },
+          {
+            "id": 11,
+            "parent": 0,
+            "notused": 62,
+            "detail": "SEARCH l USING INDEX ix_jl_acc (account_code=?) LEFT-JOIN"
+          },
+          {
+            "id": 19,
+            "parent": 0,
+            "notused": 45,
+            "detail": "SEARCH e USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN"
+          }
+        ]
+      },
+      "snapshot_bytes": 79567412,
+      "database_bytes": 89284608,
+      "memory_rss_mb": 1551,
+      "http": {
+        "idle_state_p50_ms": 2.5011999999987893,
+        "idle_state_p95_ms": 3.6785999999992782,
+        "during_audit": {
+          "heavy": {
+            "elapsed_ms": 621.7618000000002,
+            "bytes": 1071
+          },
+          "state_p50_ms": 629.107600000003,
+          "state_p95_ms": 633.640800000001,
+          "failures": []
+        },
+        "during_backup": {
+          "heavy": {
+            "elapsed_ms": 9816.090499999998,
+            "bytes": 86454272
+          },
+          "state_p50_ms": null,
+          "state_p95_ms": null,
+          "failures": [
+            {
+              "request": 1,
+              "error": "fetch failed",
+              "code": "ECONNRESET"
+            },
+            {
+              "request": 2,
+              "error": "fetch failed",
+              "code": "ECONNRESET"
+            },
+            {
+              "request": 3,
+              "error": "fetch failed",
+              "code": "ECONNRESET"
+            },
+            {
+              "request": 4,
+              "error": "fetch failed",
+              "code": "ECONNRESET"
+            },
+            {
+              "request": 5,
+              "error": "fetch failed",
+              "code": "ECONNRESET"
+            },
+            {
+              "request": 6,
+              "error": "fetch failed",
+              "code": "ECONNRESET"
+            },
+            {
+              "request": 7,
+              "error": "fetch failed",
+              "code": "ECONNRESET"
+            },
+            {
+              "request": 8,
+              "error": "fetch failed",
+              "code": "ECONNRESET"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
