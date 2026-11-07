@@ -17,3 +17,6 @@ https://supabase.com/dashboard/project/tdpozajnzuaevtwmtrzo/sql/aa109ec6-d28d-4b
 ## 2026-11-07 — استقبال لقطات الفروع
 
 طُبقت 20261107000600_branch_snapshots.sql عبر SQL Editor في معاملة واحدة؛ أصبح العدد 26 جدولًا. أضيف branch_devices وbranch_snapshots مع RLS ومنع وصول العملاء إلى بيانات رموز الأجهزة. نُفذ supabase/tests/snapshot_checks.sql على PostgreSQL ونجح: استقبال ذري، إعادة طلب ثابتة، رفض رمز خاطئ، رفض تعارض التسلسل، ومنع RPC عن authenticated. بيانات الاختبار تراجعت بـ ROLLBACK. لم يُربط جهاز حقيقي أو تُرفع بيانات فرع في هذا الاختبار. تنفيذ يدوي دون CLI migration history.
+### T10 — الترحيل 007
+
+نجح فحص عزل المنشأتين والفروع وصلاحيات العامل والجلسات مباشرة على مشروع المحترز في معاملة انتهت بالتراجع. بعد ذلك طُبّق الترحيل 20261107000700_cloud_administration.sql بصورة دائمة عبر SQL Editor. تاريخ Supabase CLI يحتاج إلى تسوية قبل تشغيل db push على هذا المشروع.
