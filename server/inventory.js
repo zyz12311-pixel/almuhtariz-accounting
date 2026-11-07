@@ -9,7 +9,7 @@ export const micro=value=>Number(scaledInteger(value,6,'الكمية'));
 const id=value=>{const n=Number(value);if(!Number.isSafeInteger(n)||n<1)throw Error('معرف غير صالح');return n;};
 const hash=value=>crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export function baseQuantity(quantity,factor){const product=BigInt(micro(quantity))*BigInt(factor);if(product%1000000n)throw Error('تحويل الوحدة ينتج كمية بأكثر من 6 منازل عشرية');const q=product/1000000n;if(q>BigInt(Number.MAX_SAFE_INTEGER))throw Error('الكمية أكبر من المسموح');return Number(q);}
-export const balance=(db,item,warehouse)=>db.prepare('SELECT COALESCE(SUM(delta_micro),0) quantity FROM stock_movements WHERE item_id=? AND warehouse_id=?').get(item,warehouse).quantity;
+export const balance=(db,item,warehouse)=>db.prepare('SELECT qty_micro quantity FROM stock_positions WHERE item_id=? AND warehouse_id=?').get(item,warehouse)?.quantity||0;
 export function recordStock(db,body,user){return tx(db,()=>{
  const itemId=id(body.item_id),warehouseId=id(body.warehouse_id),quantity=micro(body.qty),kind=body.kind;
  if(!quantity)throw Error('الكمية يجب أن تكون أكبر من صفر');
