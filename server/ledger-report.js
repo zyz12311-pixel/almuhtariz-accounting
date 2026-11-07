@@ -1,0 +1,12 @@
+import {validDate} from './dates.js';import {pageQuery} from './paging.js';
+export function accountLedger(db,query){
+ const account=String(query.account||''),from=validDate(query.from),to=validDate(query.to),p=pageQuery(query);if(from>to)throw Error('بداية الفترة تتجاوز نهايتها');
+ const a=db.prepare('SELECT * FROM accounts WHERE code=? AND postable=1').get(account);if(!a)throw Error('اختر حسابًا صالحًا');
+ const party=query.party_id?Number(query.party_id):null;if(party!==null&&(!Number.isSafeInteger(party)||party<1||!db.prepare('SELECT 1 FROM parties WHERE id=?').get(party)))throw Error('اختر طرفًا صالحًا');
+ const joins="journal_lines l JOIN journal_entries e ON e.id=l.entry_id LEFT JOIN journal_party_links x ON x.line_id=l.id LEFT JOIN invoices i ON e.source_type='invoice' AND i.id=e.source_id",scope="l.account_code=?"+(party!==null?" AND (x.party_id=? OR (x.party_id IS NULL AND i.party_id=? AND l.account_code='1201'))":''),args=[account,...(party?[party,party]:[])];
+ const summary=db.prepare(`SELECT COALESCE(SUM(CASE WHEN e.entry_date<? THEN l.debit-l.credit ELSE 0 END),0) opening,COALESCE(SUM(CASE WHEN e.entry_date>=? THEN l.debit ELSE 0 END),0) debit,COALESCE(SUM(CASE WHEN e.entry_date>=? THEN l.credit ELSE 0 END),0) credit,COUNT(CASE WHEN e.entry_date>=? THEN 1 END) total FROM ${joins} WHERE ${scope} AND e.entry_date<=?`).get(from,from,from,from,...args,to);
+ const pages=Math.max(1,Math.ceil(summary.total/p.page_size)),page=Math.min(p.page,pages);
+ const rows=db.prepare(`WITH period AS(SELECT e.id entry_id,e.entry_no,e.entry_date,e.description,e.source_type,e.source_id,l.id line_id,l.debit,l.credit,SUM(l.debit-l.credit) OVER(ORDER BY e.entry_date,e.id,l.id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) running FROM ${joins} WHERE ${scope} AND e.entry_date BETWEEN ? AND ?) SELECT * FROM period ORDER BY entry_date,entry_id,line_id LIMIT ? OFFSET ?`).all(...args,from,to,p.page_size,(page-1)*p.page_size);
+ if(![summary.opening,summary.debit,summary.credit,summary.opening+summary.debit-summary.credit,...rows.map(r=>summary.opening+r.running)].every(Number.isSafeInteger))throw Error('إجمالي الكشف أكبر من الدقة المسموحة');
+ return{account:a,party_id:party,from,to,page,page_size:p.page_size,pages,total:summary.total,summary:{opening:summary.opening/100,debit:summary.debit/100,credit:summary.credit/100,closing:(summary.opening+summary.debit-summary.credit)/100},rows:rows.map(r=>({...r,debit:r.debit/100,credit:r.credit/100,balance:(summary.opening+r.running)/100}))};
+}

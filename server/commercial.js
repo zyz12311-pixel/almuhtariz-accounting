@@ -4,9 +4,10 @@ import {postEntry,nextCounter} from './core.js';
 import {scaledInteger,roundRatio} from './money.js';
 import {baseQuantity,balance} from './inventory.js';
 import {appendAudit} from './audit.js';
-import {nowRiyadh} from './lib.js';
 import {valueMovement} from './valuation.js';
-export function validDate(value){const date=String(value||'');if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||!Number.isFinite(Date.parse(date+'T00:00:00Z'))||new Date(date+'T00:00:00Z').toISOString().slice(0,10)!==date||date>nowRiyadh().date)throw Error('حدد تاريخًا صحيحًا لا يتجاوز اليوم');return date;}
+import {validDate} from './dates.js';
+export {validDate} from './dates.js';
+import {partyBalance,allocateVoucher,autoAllocateVoucher} from './settlements.js';
 const identifier=value=>{const n=Number(value);if(!Number.isSafeInteger(n)||n<1)throw Error('معرف غير صالح');return n;};
 const money=value=>Number(scaledInteger(value,2,'المبلغ'));
 const digest=value=>crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -80,12 +81,13 @@ export function createVoucher(db,actor,body){return tx(db,()=>{
  const control=body.party_account||(receiving?'1201':'2101');if(!['1201','2101'].includes(control))throw Error('حساب الطرف غير صالح');
  const person=party(db,body.party_id,control==='1201'?'customer':'supplier'),date=validDate(body.voucher_date),amount=money(body.amount),cash=body.cash_account;
  if(!amount||!['1101','1102'].includes(cash))throw Error('المبلغ أو حساب الصندوق غير صالح');
- const ledger=partyLedger(db,person.id).filter(l=>l.account_code===control);
- const due=ledger.reduce((s,l)=>s+Math.round((receiving?l.debit-l.credit:l.credit-l.debit)*100),0);
+ const due=(receiving?1:-1)*partyBalance(db,person.id,control);
  if(amount>due)throw Error('السند يتجاوز الرصيد المستحق للطرف');
  const number=(receiving?'RC-':'PY-')+String(nextCounter(db,'voucher')).padStart(6,'0'),notes=text(body.notes,500,'البيان',true);
  const journal=postEntry(db,{date,description:number+' '+notes,source_type:'voucher',branch_id:1,lines:[{account:cash,[receiving?'debit':'credit']:amount},{account:control,party_id:person.id,[receiving?'credit':'debit']:amount}]});
  const id=Number(db.prepare('INSERT INTO cash_vouchers(number,kind,party_id,voucher_date,amount,cash_account,notes,created_by,request_id,request_hash,journal_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(number,body.kind,person.id,date,amount,cash,notes,actor,rec.request,rec.hash,journal).lastInsertRowid);
+ db.prepare('INSERT INTO voucher_context(voucher_id,party_account,party_snapshot) VALUES(?,?,?)').run(id,control,JSON.stringify(person));
+ if(body.allocations===undefined)autoAllocateVoucher(db,actor,id,rec.request);else if(!Array.isArray(body.allocations)||body.allocations.length)allocateVoucher(db,actor,id,{request_id:rec.request,allocations:body.allocations});
  appendAudit(db,{actor,event:'voucher.posted',entity_type:'voucher',entity_id:id,details:{number,amount}});return{id,replayed:false};
 });}
 export function postManualJournal(db,actor,body){return tx(db,()=>{

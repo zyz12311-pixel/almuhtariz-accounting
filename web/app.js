@@ -25,8 +25,8 @@ function applyUI() {
   d.style.setProperty('--font', { system: 'Tahoma,"Segoe UI",Arial,sans-serif', serif: '"Traditional Arabic","Times New Roman",serif', mono: 'Consolas,monospace' }[u.font] || 'Tahoma,sans-serif');
 }
 
-const ICONS = { dashboard:'▦', invoices:'▤', new:'＋', parties:'♙', items:'◇', reports:'▥', settings:'⚙', pos:'▣',purchases:'⇣',vouchers:'⇄',journals:'≡',stocktakes:'✓',shifts:'◷',sync:'↻',compliance:'◈',print:'▧',quotes:'▱' };
-const NAV = [['dashboard', 'نظرة عامة'], ['invoices', 'المبيعات والفواتير'], ['quotes','عروض الأسعار'], ['new', 'فاتورة جديدة'], ['pos', 'نقطة البيع'], ['parties', 'العملاء والموردون'], ['items', 'الأصناف والخدمات'], ['purchases','المشتريات'], ['vouchers','القبض والصرف'], ['journals','القيود المحاسبية'], ['stocktakes','الجرد'], ['shifts','الورديات'], ['sync','ربط السحابة'], ['reports', 'التقارير المالية'], ['compliance','الفوترة والهيئة'], ['print', 'إعدادات الطباعة'], ['settings', 'الإعدادات']];
+const ICONS = { dashboard:'▦', invoices:'▤', new:'＋', parties:'♙', items:'◇', reports:'▥', settings:'⚙', pos:'▣',purchases:'⇣',vouchers:'⇄',journals:'≡',stocktakes:'✓',shifts:'◷',sync:'↻',compliance:'◈',print:'▧',quotes:'▱',ledger:'☷' };
+const NAV = [['dashboard', 'نظرة عامة'], ['invoices', 'المبيعات والفواتير'], ['quotes','عروض الأسعار'], ['new', 'فاتورة جديدة'], ['pos', 'نقطة البيع'], ['parties', 'العملاء والموردون'], ['items', 'الأصناف والخدمات'], ['purchases','المشتريات'], ['vouchers','القبض والصرف'], ['journals','القيود المحاسبية'], ['ledger','دفتر الأستاذ وكشف الطرف'], ['stocktakes','الجرد'], ['shifts','الورديات'], ['sync','ربط السحابة'], ['reports', 'التقارير المالية'], ['compliance','الفوترة والهيئة'], ['print', 'إعدادات الطباعة'], ['settings', 'الإعدادات']];
 const WORKSPACES = { trade: { name:'التجاري والخدمات', subtitle:'أعمالك اليومية، في مكان واحد', item:'صنف أو خدمة' }, events: { name:'الحفلات والمناسبات', subtitle:'فواتير تجهيزاتك وخدمات مناسباتك', item:'تجهيز أو خدمة' }, engineering: { name:'الهندسي والمقاولات', subtitle:'فواتير الأعمال والخدمات الهندسية', item:'بند أعمال أو خدمة' } };
 let workspace = localStorage.getItem('smartz.workspace') || 'trade';
 if (!WORKSPACES[workspace]) workspace = 'trade';
@@ -80,6 +80,7 @@ const pages = {
   async quotes(){return(await import('./quotations.js')).renderQuotations({api,shell,esc,money});},
   async purchases(){return (await import('./commercial.js')).renderCommercial('purchases',{api,shell,esc,money,S});},
   async vouchers(){return (await import('./commercial.js')).renderCommercial('vouchers',{api,shell,esc,money,S});},
+  async ledger(){return(await import('./ledger-page.js')).renderLedger({api,shell,esc,money,S});},
   async journals(){return (await import('./commercial.js')).renderCommercial('journals',{api,shell,esc,money,S});},
   async financial(){return (await import('./financial-reports.js')).renderFinancial({api,shell,esc,money,S});},
   async shifts(){return (await import('./operations.js')).renderOperations('shifts',{api,shell,esc,money,S});},

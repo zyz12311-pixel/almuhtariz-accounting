@@ -27,6 +27,7 @@ import {syncInfo,configureSync,syncBranch} from './sync.js';
 import {createQuotation,quotation,convertQuotation,cancelQuotation} from './quotations.js';
 import {commercialPrint} from './commercial-print.js';
 import {commercialList,shiftList,complianceList,posHistoryList} from './lists.js';
+import {allocateVoucher,voucherDetails,outstandingDocuments,reverseManualJournal} from './settlements.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.join(here, '..', 'web');
@@ -106,7 +107,7 @@ export function createApp({ dbFile, licensePath }) {
   route('GET','/api/lists/:kind',({params,query})=>commercialList(db,params.kind,query),{accountant:true});
   route('GET','/api/purchases',()=>listPurchases(db),{accountant:true});
   route('GET','/api/purchases/:id/html',({params})=>{const p=purchaseDetails(db,params.id),snapshot=db.prepare('SELECT supplier FROM purchase_snapshots WHERE purchase_id=?').get(p.id);return new Raw(commercialPrint({title:p.kind==='return'?'مرتجع شراء':'سند تسجيل فاتورة مورد',number:p.number,date:p.document_date,company:getSetting(db,'company'),party:snapshot?JSON.parse(snapshot.supplier):null,headers:['الوصف','الوحدة','الكمية','سعر الوحدة','الصافي','الضريبة'],rows:p.lines.map(l=>[l.description,l.unit_name,l.qty,l.unit_price,l.net,l.vat]),totals:[['قبل الضريبة',p.subtotal],['الضريبة',p.vat],['الإجمالي',p.total]],notes:'مرجع المورد: '+p.supplier_reference+' · '+p.notes,settings:getSetting(db,'invoice')}));},{accountant:true});
-  route('GET','/api/vouchers/:id/html',({params})=>{const v=db.prepare('SELECT * FROM cash_vouchers WHERE id=?').get(params.id);need(v,'السند غير موجود');return new Raw(commercialPrint({title:v.kind==='receipt'?'سند قبض':'سند صرف',number:v.number,date:v.voucher_date,company:getSetting(db,'company'),party:db.prepare('SELECT name_ar FROM parties WHERE id=?').get(v.party_id),headers:['الحساب','البيان','المبلغ'],rows:[[v.cash_account,v.notes,v.amount/100]],totals:[['قيمة السند',v.amount/100]],settings:getSetting(db,'invoice')}));},{accountant:true});
+  route('GET','/api/vouchers/:id/html',({params})=>{const v=voucherDetails(db,params.id);return new Raw(commercialPrint({title:v.kind==='receipt'?'سند قبض':'سند صرف',number:v.number,date:v.voucher_date,company:getSetting(db,'company'),party:v.party,headers:['الحساب','البيان','المبلغ'],rows:[[v.cash_account,v.notes,v.amount]],totals:[['قيمة السند',v.amount]],notes:v.legacy_snapshot?'بيانات الطرف محفوظة وقت ترقية السند القديم':'',settings:getSetting(db,'invoice')}));},{accountant:true});
   route('GET','/api/quotations',()=>db.prepare('SELECT id,number,document_date,valid_until,status,total,invoice_id FROM quotations ORDER BY id DESC').all(),{accountant:true});
   route('POST','/api/quotations',({body,user})=>createQuotation(db,user.id,body),{accountant:true});
   route('POST','/api/quotations/:id/convert',({params,user,body})=>convertQuotation(db,user.id,params.id,body),{accountant:true});
@@ -115,10 +116,14 @@ export function createApp({ dbFile, licensePath }) {
   route('GET','/api/purchases/:id',({params})=>purchaseDetails(db,params.id),{accountant:true});
   route('POST','/api/purchases',({body,user})=>createPurchase(db,user.id,body),{accountant:true});
   route('GET','/api/vouchers',()=>db.prepare('SELECT v.*,p.name_ar party FROM cash_vouchers v JOIN parties p ON p.id=v.party_id ORDER BY v.id DESC').all().map(v=>({...v,amount:v.amount/100})),{accountant:true});
+  route('GET','/api/vouchers/:id',({params})=>voucherDetails(db,params.id),{accountant:true});
+  route('POST','/api/vouchers/:id/allocations',({params,user,body})=>allocateVoucher(db,user.id,params.id,body),{accountant:true});
+  route('GET','/api/parties/:id/outstanding',({params,query})=>outstandingDocuments(db,Number(params.id),query.account||'1201',query),{accountant:true});
   route('POST','/api/vouchers',({body,user})=>createVoucher(db,user.id,body),{accountant:true});
   route('GET','/api/parties/:id/ledger',({params})=>partyLedger(db,Number(params.id)),{accountant:true});
   route('GET','/api/accounts',()=>db.prepare('SELECT * FROM accounts ORDER BY code').all(),{accountant:true});
   route('GET','/api/journals',()=>db.prepare('SELECT e.*,l.account_code,a.name_ar account,l.debit,l.credit,x.party_id,p.name_ar party FROM journal_entries e JOIN journal_lines l ON l.entry_id=e.id JOIN accounts a ON a.code=l.account_code LEFT JOIN journal_party_links x ON x.line_id=l.id LEFT JOIN parties p ON p.id=x.party_id ORDER BY e.id DESC,l.id').all().map(l=>({...l,debit:l.debit/100,credit:l.credit/100})),{accountant:true});
+  route('POST','/api/journals/:id/reverse',({params,user,body})=>reverseManualJournal(db,user.id,params.id,body),{accountant:true});
   route('POST','/api/journals',({body,user})=>postManualJournal(db,user.id,body),{accountant:true});
   route('GET','/api/accounting/lock',()=>db.prepare('SELECT * FROM accounting_locks WHERE id=1').get()||null,{owner:true});
   route('POST','/api/accounting/lock',({body,user})=>{const date=validDate(body.closed_through),old=db.prepare('SELECT closed_through FROM accounting_locks WHERE id=1').get();need(!old||date>old.closed_through,'الإقفال يتقدم فقط ولا يعيد فتح الفترات');db.prepare('INSERT INTO accounting_locks(id,closed_through,actor_id) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET closed_through=excluded.closed_through,actor_id=excluded.actor_id,created_at=CURRENT_TIMESTAMP').run(date,user.id);return{ok:true};},{owner:true});
@@ -212,6 +217,7 @@ export function createApp({ dbFile, licensePath }) {
       COALESCE(SUM(CASE type WHEN '381' THEN -vat ELSE vat END),0) vat FROM invoices WHERE status='issued' AND issue_date LIKE ?`).get(m + '%');
     return { month: m, invoices: t.n, drafts:db.prepare("SELECT COUNT(*) n FROM invoices WHERE status='draft'").get().n, sales: fromCents(t.sub), vat: fromCents(t.vat) };
   });
+  route('GET','/api/reports/ledger',({query})=>{validDate(query.from);validDate(query.to);return jobs.report('ledger',query.from,query.to,query);},{accountant:true});
   route('GET', '/api/reports/trial-balance', () => jobs.report('trial'), { accountant: true });
   route('GET','/api/reports/financial',({query})=>{validDate(query.from);validDate(query.to);return jobs.report('financial',query.from,query.to);},{accountant:true});
   route('GET', '/api/reports/vat', ({ query }) => { need(/^\d{4}-\d{2}-\d{2}$/.test(query.from || '') && /^\d{4}-\d{2}-\d{2}$/.test(query.to || ''), 'حدد الفترة (from/to بصيغة YYYY-MM-DD)'); return jobs.report('vat',query.from,query.to); }, { accountant: true });
