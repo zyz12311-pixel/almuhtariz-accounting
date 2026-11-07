@@ -21,7 +21,7 @@ try {
  for(const p of ['/api/dashboard','/api/invoices','/api/items','/api/parties','/api/users','/api/backup','/api/settings/ui','/api/settings/company','/api/sync/status','/api/warehouses','/api/inventory/balances','/api/inventory/valuation','/api/purchases','/api/vouchers','/api/journals','/api/accounts','/api/quotations','/api/quotations/1/html','/api/purchases/1/html','/api/vouchers/1/html','/api/vouchers/1','/api/parties/1/outstanding?account=1201','/api/reports/ledger?account=1201&from=2026-01-01&to=2026-01-01','/api/accounting/lock','/api/inventory/movements?item_id=1']) assert.equal((await call('GET',p,null,cashier)).st,403,p);
  for(const p of ['/api/vouchers/1/allocations','/api/journals/1/reverse','/api/accounting/lock','/api/inventory/cost-corrections'])assert.equal((await call('POST',p,{},cashier)).st,403,p);
  assert.equal((await call('GET','/api/preferences/ui',null,cashier)).st,200);
- const catalog=(await call('GET','/api/pos/catalog',null,cashier)).j;assert.equal(catalog[0].barcode,'0001234567890');
+ const catalog=(await call('GET','/api/pos/catalog',null,cashier)).j;assert.equal(catalog.rows[0].barcode,'0001234567890');
  assert.equal((await call('POST','/api/items',{name_ar:'اختراق',unit_price:1},cashier)).st,403);
  assert.equal((await call('POST','/api/invoices',{lines:[{description:'اختراق',qty:1,unit_price:1}]},cashier)).st,403);
  const request_id=crypto.randomUUID();const own=await call('POST','/api/pos/sales',{request_id,pos_id:1,payment:'cash',lines:[{item_id:item,qty:2,unit_price:0,vat_rate:0,description:'سعر معدل'}]},cashier);assert.equal(own.st,200);

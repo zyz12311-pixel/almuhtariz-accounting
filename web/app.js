@@ -11,7 +11,7 @@ function setTrackingItem(row,item){
 
 
 async function api(p, o = {}) {
-  const r = await fetch('/api/' + p, { method: o.method || 'GET', headers: o.body ? { 'content-type': 'application/json' } : {}, body: o.body ? JSON.stringify(o.body) : undefined });
+  const r = await fetch('/api/' + p, { method: o.method || 'GET', headers: o.body ? { 'content-type': 'application/json' } : {}, body: o.body ? JSON.stringify(o.body) : undefined, signal: o.signal });
   const t = await r.text(); let j; try { j = JSON.parse(t); } catch { j = { error: t }; }
   if (!r.ok) throw new Error(j.error || 'خطأ');
   return j;
@@ -118,9 +118,9 @@ const pages = {
   },
   async new() {
     const isCashier=S.state.user.role==='staff',isPos=location.hash.slice(1)==='pos'||isCashier;
-    [S.parties,S.items,S.pos]=await Promise.all([api(isPos?'pos/customers':'parties'),(isPos?api('pos/catalog'):Promise.resolve([])),api(isPos?'pos/points':'pos')]);
+    [S.parties,S.pos]=await Promise.all([api(isPos?'pos/customers':'parties'),api(isPos?'pos/points':'pos')]);
+    S.items=[];
     if(!isPos)S.parties=S.parties.filter(p=>['customer','both'].includes(p.kind));
-    S.items=S.items.flatMap(i=>[{...i,item_unit_id:null},...(i.units||[]).map(u=>({...i,name_ar:i.name_ar+' — '+u.name,base_unit:u.name,unit_code:u.unit_code,item_unit_id:u.id,unit_factor_micro:u.factor_micro,unit_price:u.unit_price,barcode:u.barcode,units:[]}))]);
     shell(`<h1>فاتورة جديدة</h1><div class="card"><div class="row"><label>العميل<select id="party"><option value="">— بدون —</option>${S.parties.map(p => `<option value="${p.id}">${esc(p.name_ar)}</option>`).join('')}</select></label>
     <label>نقطة البيع<select id="pos">${S.pos.filter(p => p.active).map(p => `<option value="${p.id}">${esc(p.name)} (${esc(p.prefix)})</option>`).join('')}</select></label>
     <label>نوع الفاتورة<select id="invoice-kind"><option value="">حسب بيانات العميل</option><option value="standard">فاتورة ضريبية</option><option value="simplified">فاتورة ضريبية مبسطة</option></select></label><label>تاريخ التوريد<input id="supply-date" type="date" value="${S.state.today}"></label><label>الدفع<select id="pay"><option value="cash">نقدًا</option><option value="bank">بنك</option><option value="credit">آجل</option></select></label></div>
@@ -140,6 +140,8 @@ const pages = {
     const calc=()=>{const lines=rows(),groups=new Map();let sub=0;$$('tr',tb).forEach((tr,index)=>{const line=lines[index],rate=Math.round(line.discount_rate*100),list=Math.round(line.unit_price*100),unit=list>=0&&Number.isSafeInteger(list)&&rate>=0&&rate<=10000?Number((BigInt(list)*BigInt(10000-rate)+5000n)/10000n):0,net=Math.round(line.qty*unit),vat=Math.round(net*line.vat_rate/100);sub+=net;const key=[line.tax_category,line.vat_rate,line.exemption_code].join('|');if(!groups.has(key))groups.set(key,{base:0,rate:line.vat_rate});groups.get(key).base+=net;$('.t',tr).textContent=money((net+vat)/100);});const vat=[...groups.values()].reduce((s,g)=>s+Math.round(g.base*g.rate/100),0);$('#tt').textContent='بعد خصم الوحدة: قبل الضريبة '+money(sub/100)+' + ضريبة '+money(vat/100)+' = '+money((sub+vat)/100);};
     $('#add').onclick = () => { addRow(); calc(); }; addRow(); calc();
     const save = draft => guard(async () => {
+      if (isPos && Number($('#barcode-form')?.dataset.pending)) throw Error('انتظر اكتمال قراءة الباركود');
+      if ($$('tr', tb).some(row => row.trackingItem?.unavailable)) throw Error('أزل البنود غير المتاحة من السلة قبل الإصدار');
       const lines = rows();
       if (!lines.length || lines.some(l => !l.description.trim() || !Number.isFinite(l.qty) || l.qty <= 0 || !Number.isFinite(l.unit_price) || l.unit_price < 0 || !Number.isFinite(l.vat_rate) || l.vat_rate < 0 || l.vat_rate > 100)) throw new Error('أكمل وصف كل بند والكمية والسعر ونسبة الضريبة');
       if ($('#pay').value === 'credit' && !$('#party').value) throw new Error('اختر العميل للفاتورة الآجلة');
@@ -156,23 +158,108 @@ const pages = {
     if(workspace!=='trade'&&S.state.user.role!=='staff'){shell('<div class="card"><h1>نقطة البيع التجارية</h1><p>اختر النشاط التجاري لفتح نقطة البيع وقراءة الباركود.</p><button id="open-trade" class="p">فتح القسم التجاري</button></div>');$('#open-trade').onclick=()=>{workspace='trade';localStorage.setItem('smartz.workspace',workspace);pages.pos();};return;}
     workspace='trade';S.saleRequestId=newSaleRequestId();await pages.new();$('main h1').textContent='نقطة البيع التجارية';
     const catalog=document.createElement('section');catalog.className='card pos-catalog';
-    catalog.innerHTML='<div class="section-heading"><div><h3>امسح، أضف، أصدر</h3><p>قارئ باركود USB أو Bluetooth يعمل كلوحة مفاتيح وينهي القراءة بزر Enter.</p></div><span class="tag" id="local-storage-state">جارٍ تهيئة الذاكرة المحلية…</span></div><form id="barcode-form" class="barcode-form"><label for="barcode-input">قراءة الباركود<input id="barcode-input" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="امسح الباركود أو اكتبه ثم اضغط Enter" dir="ltr"></label><button type="submit" class="p">إضافة الصنف</button><button type="button" id="clear-pos-cart">سلة جديدة</button></form><div id="barcode-message" role="status" class="hint"></div><input id="pos-search" type="search" aria-label="البحث عن صنف" placeholder="ابحث بالاسم أو الباركود"><div class="product-grid">'+S.items.map((item,i)=>'<button type="button" data-product="'+i+'"><span>◇</span><b>'+esc(item.name_ar)+'</b><small>'+money(item.unit_price)+' ر.س / '+esc(item.base_unit||'قطعة')+'</small><small dir="ltr">'+esc(item.barcode||'')+'</small></button>').join('')+'</div>'+(S.items.length?'':'<p class="hint">اطلب من المالك أو المحاسب تجهيز الأصناف والباركود.</p>');
+    catalog.innerHTML=`<div class="section-heading"><div><h3>امسح، أضف، أصدر</h3><p>قارئ باركود USB أو Bluetooth يعمل كلوحة مفاتيح وينهي القراءة بزر Enter.</p></div><span class="tag" id="local-storage-state">جارٍ تهيئة الذاكرة المحلية…</span></div>
+    <form id="barcode-form" class="barcode-form"><label for="barcode-input">قراءة الباركود<input id="barcode-input" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="امسح الباركود أو اكتبه ثم اضغط Enter" dir="ltr" maxlength="80" disabled></label><button type="submit" class="p" disabled>إضافة الصنف</button><button type="button" id="clear-pos-cart" disabled>سلة جديدة</button></form>
+    <div id="barcode-message" role="status" class="hint"></div><input id="pos-search" type="search" aria-label="البحث عن صنف" placeholder="ابحث بالاسم أو الكود أو الباركود" maxlength="100" disabled><div class="product-grid"></div>
+    <div class="toolbar"><button type="button" id="pos-previous" disabled>السابق</button><span id="pos-results" role="status"></span><button type="button" id="pos-next" disabled>التالي</button></div>`;
     $('.content').insertBefore(catalog,$('.content .card'));
     const controls=document.createElement('section');controls.className='card row';controls.innerHTML='<button id="pos-shift-tools">فتح / إقفال الوردية</button><button id="pos-return-tools">مرتجع فاتورة</button>';catalog.before(controls);
     $('#pos-shift-tools').onclick=guard(async()=>{await (await import('./operations.js')).renderOperations('shifts',{api,shell,esc,money,S,dialog:$('#dlg')});});
     $('#pos-return-tools').onclick=guard(async()=>{await (await import('./operations.js')).renderPosReturn({api,esc,money,dialog:$('#dlg'),after:()=>pages.pos()});});
-    const scanner=$('#barcode-input'),status=$('#barcode-message');let restoring=true;
-    const persist=()=>{if(restoring)return;const lines=$$('#ln tbody tr').filter(r=>r.dataset.itemId).map(r=>({item_id:Number(r.dataset.itemId),item_unit_id:Number(r.dataset.itemUnitId)||null,qty:Number($('.q',r).value),tracking:JSON.parse(r.dataset.tracking||'[]')}));globalThis.AlmuhtarizStore?.put(localScope(),'sale',{request_id:S.saleRequestId,lines,pos_id:Number($('#pos').value),party_id:Number($('#party').value)||null,payment:$('#pay').value},'drafts');};
-    const addItem=(item,quantity=1)=>{let tr=$$('#ln tbody tr').find(r=>Number(r.dataset.itemId)===item.id&&(Number(r.dataset.itemUnitId)||null)===(item.item_unit_id||null));if(tr)$('.q',tr).value=Math.round((Number($('.q',tr).value)+quantity)*1000000)/1000000;else{tr=$$('#ln tbody tr').find(r=>!$('.d',r).value);if(!tr){$('#add').click();tr=$$('#ln tbody tr').at(-1);}tr.dataset.itemId=String(item.id);tr.dataset.itemUnitId=item.item_unit_id?String(item.item_unit_id):'';$('.d',tr).value=item.name_ar;$('.q',tr).value=quantity;$('.u',tr).value=item.unit_price;$('.v',tr).value=item.vat_rate;$('.tc',tr).value=item.tax_category||'S';$('.ec',tr).value=item.exemption_code||'';$('.er',tr).value=item.exemption_reason||'';}setTrackingItem(tr,item);$('.q',tr).dispatchEvent(new Event('input',{bubbles:true}));persist();return tr;};
-    $('#barcode-form').onsubmit=e=>{e.preventDefault();const barcode=scanner.value.trim();if(!barcode)return;const item=S.items.find(i=>i.barcode===barcode);if(!item){status.textContent='لم نجد صنفًا بهذا الباركود. لم تتم إضافة أي بند.';scanner.select();return;}addItem(item);status.textContent='أضيف: '+item.name_ar;scanner.value='';scanner.focus();};
-    $('#pos-search').oninput=e=>{const q=e.target.value.trim().toLowerCase();$$('[data-product]').forEach(b=>{const item=S.items[Number(b.dataset.product)];b.hidden=!item.name_ar.toLowerCase().includes(q)&&!(item.barcode||'').toLowerCase().includes(q);});};
-    $$('[data-product]').forEach(b=>b.onclick=()=>{addItem(S.items[Number(b.dataset.product)]);scanner.focus();});
-    $('#ln').addEventListener('input',persist);$('#ln').addEventListener('click',e=>{if(e.target.closest('button'))queueMicrotask(persist);});for(const id of ['party','pay','pos'])$('#'+id).addEventListener('change',persist);
-    $('#clear-pos-cart').onclick=guard(async()=>{if(localScope()&&await globalThis.AlmuhtarizStore?.ready()){const cleared=await globalThis.AlmuhtarizStore.remove(localScope(),'sale','drafts');if(!cleared)throw new Error('تعذر مسح السلة المحلية');}await pages.pos();});
-    const ready=Boolean(await globalThis.AlmuhtarizStore?.ready());$('#local-storage-state').textContent=ready?'الذاكرة المحلية جاهزة':'الحفظ داخل المتصفح غير متاح';
-    if(ready&&localScope()){await globalThis.AlmuhtarizStore.put(localScope(),'catalog',S.items);const draft=await globalThis.AlmuhtarizStore.get(localScope(),'sale','drafts');if(draft?.lines?.length){if(typeof draft.request_id==='string')S.saleRequestId=draft.request_id;for(const row of draft.lines){const item=S.items.find(i=>i.id===row.item_id&&(i.item_unit_id||null)===(row.item_unit_id||null));if(item&&Number.isFinite(row.qty)&&row.qty>0&&row.qty<=1000000){const tr=addItem(item,row.qty);if(Array.isArray(row.tracking)){tr.dataset.tracking=JSON.stringify(row.tracking);setTrackingItem(tr,item);}}}if(S.pos.some(p=>p.id===draft.pos_id))$('#pos').value=draft.pos_id;if(S.parties.some(p=>p.id===draft.party_id))$('#party').value=draft.party_id;if(['cash','bank','credit'].includes(draft.payment))$('#pay').value=draft.payment;status.textContent='استُعيدت سلة غير مصدرة من هذا الجهاز.';}}
-    restoring=false;scanner.focus();
-    if(!S.pos.length){$('#issue').disabled=true;msg('لم تُعيّن لك نقطة بيع مفعلة. راجع مالك المنشأة.');}
+
+    const scanner=$('#barcode-input'), status=$('#barcode-message'), scope=localScope();
+    const issue=$('#issue'), clear=$('#clear-pos-cart');
+    let restoring=true;
+    issue.disabled=true;
+    const persist=()=>{
+      if(restoring||!catalog.isConnected)return;
+      const lines=$$('#ln tbody tr').filter(row=>row.dataset.itemId).map(row=>({
+        item_id:Number(row.dataset.itemId),item_unit_id:Number(row.dataset.itemUnitId)||null,
+        qty:Number($('.q',row).value),tracking:JSON.parse(row.dataset.tracking||'[]'),
+      }));
+      globalThis.AlmuhtarizStore?.put(scope,'sale',{request_id:S.saleRequestId,lines,pos_id:Number($('#pos').value),party_id:Number($('#party').value)||null,payment:$('#pay').value},'drafts');
+    };
+    const addItem=(item,quantity=1)=>{
+      const rows=$$('#ln tbody tr');
+      let row=rows.find(row=>Number(row.dataset.itemId)===item.id&&(Number(row.dataset.itemUnitId)||null)===item.item_unit_id);
+      if(row) quantity=Math.round((Number($('.q',row).value)+quantity)*1000000)/1000000;
+      else {
+        row=rows.find(row=>!row.dataset.itemId);
+        if(!row){
+          if(!restoring&&rows.length>=200)throw Error('الحد الأقصى 200 بند في السلة');
+          $('#add').click();row=$$('#ln tbody tr').at(-1);
+        }
+      }
+      row.dataset.itemId=String(item.id);row.dataset.itemUnitId=item.item_unit_id?String(item.item_unit_id):'';
+      $('.d',row).value=item.name_ar;$('.q',row).value=quantity;$('.u',row).value=item.unit_price;$('.v',row).value=item.vat_rate;
+      $('.tc',row).value=item.tax_category||'S';$('.ec',row).value=item.exemption_code||'';$('.er',row).value=item.exemption_reason||'';
+      setTrackingItem(row,item);$('.q',row).dispatchEvent(new Event('input',{bubbles:true}));
+      return row;
+    };
+    $('#ln').addEventListener('input',persist);
+    $('#ln').addEventListener('click',event=>{if(event.target.closest('button'))queueMicrotask(persist);});
+    for(const id of ['party','pay','pos'])$('#'+id).addEventListener('change',persist);
+    clear.onclick=guard(async()=>{
+      if(Number($('#barcode-form').dataset.pending))throw Error('انتظر اكتمال قراءة الباركود');
+      const wasRestoring=restoring;
+      restoring=true;
+      clear.disabled=true;
+      try {
+        if(scope&&await globalThis.AlmuhtarizStore?.ready()){
+          if(!await globalThis.AlmuhtarizStore.remove(scope,'sale','drafts'))throw Error('تعذر مسح السلة المحلية');
+        }
+        if(catalog.isConnected)await pages.pos();
+      } finally {
+        restoring=wasRestoring;
+        clear.disabled=false;
+      }
+    });
+
+    const ready=Boolean(await globalThis.AlmuhtarizStore?.ready());
+    if(!catalog.isConnected)return;
+    $('#local-storage-state').textContent=ready?'الذاكرة المحلية جاهزة':'الحفظ داخل المتصفح غير متاح';
+    try {
+      if(ready&&scope){
+        void globalThis.AlmuhtarizStore.remove(scope,'catalog');
+        const draft=await globalThis.AlmuhtarizStore.get(scope,'sale','drafts');
+        const lines=(draft?.lines||[]).filter(line=>Number.isSafeInteger(line.item_id)&&line.item_id>0&&Number.isFinite(line.qty)&&line.qty>0&&line.qty<=1000000);
+        if(lines.length){
+          const key=line=>line.item_id+':'+(line.item_unit_id||0), found=new Map();
+          for(let offset=0;offset<lines.length;offset+=200){
+            const keys=lines.slice(offset,offset+200).map(key).join(',');
+            const {rows}=await api('pos/catalog/selection?'+new URLSearchParams({keys}));
+            for(const item of rows)found.set(item.id+':'+(item.item_unit_id||0),item);
+          }
+          if(!catalog.isConnected)return;
+          if(typeof draft.request_id==='string')S.saleRequestId=draft.request_id;
+          let missing=0;
+          for(const line of lines){
+            const item=found.get(key(line))||{id:line.item_id,item_unit_id:line.item_unit_id||null,name_ar:'بند غير متاح #'+line.item_id,unit_price:0,vat_rate:15,unavailable:true};
+            if(item.unavailable)missing++;
+            const row=addItem(item,line.qty);
+            if(Array.isArray(line.tracking)){row.dataset.tracking=JSON.stringify(line.tracking);setTrackingItem(row,item);}
+          }
+          if(S.pos.some(point=>point.id===draft.pos_id))$('#pos').value=draft.pos_id;
+          if(S.parties.some(party=>party.id===draft.party_id))$('#party').value=draft.party_id;
+          if(['cash','bank','credit'].includes(draft.payment))$('#pay').value=draft.payment;
+          status.textContent=missing?'استُعيدت السلة. أزل البنود غير المتاحة قبل الإصدار.':'استُعيدت سلة غير مصدرة من هذا الجهاز.';
+        }
+      }
+    } catch(error) {
+      if(catalog.isConnected){clear.disabled=false;status.textContent='تعذرت استعادة السلة. أعد تحميل الصفحة للمحاولة مجددًا. '+error.message;}
+      return;
+    }
+    if(!catalog.isConnected)return;
+    restoring=false;
+    clear.disabled=false;
+    scanner.disabled=false;
+    $('#barcode-form button[type=submit]').disabled=false;
+    $('#pos-search').disabled=false;
+    issue.disabled=!S.pos.length;
+    if(!S.pos.length)msg('لم تُعيّن لك نقطة بيع مفعلة. راجع مالك المنشأة.');
+    scanner.focus();
+    const {mountPosCatalog}=await import('./pos-catalog.js');
+    if(catalog.isConnected)await mountPosCatalog({root:catalog,api,esc,money,addItem});
   },
   async parties() {
     const rows=await api('parties');let editing=null;
