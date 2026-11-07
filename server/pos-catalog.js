@@ -1,14 +1,17 @@
 import { pageQuery, paged } from './paging.js';
 import { normalizeBarcode } from './pos.js';
+import { scaleLabel } from './pos-scale.js';
 
 // Keep the cashier projection independent of the inventory management endpoint.
-const itemFields = 'i.id,i.name_ar,i.unit_price,i.vat_rate,i.barcode,i.tax_category,i.exemption_code,i.exemption_reason,i.sku,i.base_unit,i.unit_code,i.track_stock,i.tracking_mode,i.expiry_required';
-const unitFields = 'id,item_id,name,unit_code,factor_micro,unit_price,barcode';
+const itemFields = 'i.id,i.name_ar,i.unit_price,i.wholesale_price,i.vat_rate,i.barcode,i.tax_category,i.exemption_code,i.exemption_reason,i.sku,i.base_unit,i.unit_code,i.track_stock,i.tracking_mode,i.expiry_required';
+const unitFields = 'id,item_id,name,unit_code,factor_micro,unit_price,wholesale_price,barcode';
 const placeholders = ids => ids.map(() => '?').join(',');
 
 function sellable(item, unit = null) {
+  const wholesale=(unit??item).wholesale_price;
   return {
     ...item,
+    wholesale_price: wholesale===null?null:wholesale/100,
     name_ar: unit ? `${item.name_ar} — ${unit.name}` : item.name_ar,
     base_unit: unit?.name ?? item.base_unit,
     unit_code: unit?.unit_code ?? item.unit_code,
@@ -51,9 +54,13 @@ export function posBarcode(db, value) {
   if (base) return sellable(base);
 
   const unit = db.prepare(`SELECT ${unitFields} FROM item_units WHERE barcode=? AND active=1`).get(barcode);
-  if (!unit) return null;
-  const item = db.prepare(`SELECT ${itemFields} FROM items i WHERE i.id=? AND i.active=1`).get(unit.item_id);
-  return item ? sellable(item, unit) : null;
+  const byId = db.prepare(`SELECT ${itemFields} FROM items i WHERE i.id=? AND i.active=1`);
+  if (unit) {
+    const item = byId.get(unit.item_id);
+    return item ? sellable(item, unit) : null;
+  }
+  const label = scaleLabel(db, barcode);
+  return label ? {...sellable(byId.get(label.itemId)),scale_code:barcode,scale_mode:label.mode,scale_qty:label.qty} : null;
 }
 
 // Resolve only the item/unit pairs present in an existing browser draft.

@@ -17,8 +17,15 @@ export function openShift(db,user,body){return tx(db,()=>{
  appendAudit(db,{actor:user.id,event:'shift.opened',entity_type:'shift',entity_id:shift,details:{pos,opening}});return{id:shift,replayed:false};
 });}
 export function shiftSummary(db,shift){
- const totals=db.prepare("SELECT COALESCE(SUM(CASE WHEN i.type='381' THEN -i.total ELSE i.total END),0) total,COALESCE(SUM(CASE WHEN i.payment='cash' THEN CASE WHEN i.type='381' THEN -i.total ELSE i.total END ELSE 0 END),0) cash,COUNT(*) documents FROM pos_shift_invoices x JOIN invoices i ON i.id=x.invoice_id WHERE x.shift_id=?").get(shift.id);
- return{...shift,opening_cash:shift.opening_cash/100,counted_cash:shift.counted_cash===null?null:shift.counted_cash/100,expected_cash:shift.closed_at?shift.expected_cash/100:(shift.opening_cash+totals.cash)/100,variance:shift.variance===null?null:shift.variance/100,sales:totals.total/100,cash_sales:totals.cash/100,documents:totals.documents};
+ const totals=db.prepare(`SELECT i.payment, SUM(CASE WHEN i.type='381' THEN -i.total ELSE i.total END) amount,
+  COUNT(*) documents FROM pos_shift_invoices x JOIN invoices i ON i.id=x.invoice_id
+  WHERE x.shift_id=? GROUP BY i.payment`).all(shift.id);
+ const payments=new Map(totals.map(row=>[row.payment,row.amount]));
+ const cash=payments.get('cash')??0,bank=payments.get('bank')??0,credit=payments.get('credit')??0;
+ return{...shift,opening_cash:shift.opening_cash/100,counted_cash:shift.counted_cash===null?null:shift.counted_cash/100,
+  expected_cash:shift.closed_at?shift.expected_cash/100:(shift.opening_cash+cash)/100,variance:shift.variance===null?null:shift.variance/100,
+  sales:(cash+bank+credit)/100,cash_sales:cash/100,bank_sales:bank/100,credit_sales:credit/100,
+  documents:totals.reduce((count,row)=>count+row.documents,0)};
 }
 export function closeShift(db,user,shiftId,body){return tx(db,()=>{
  const shift=db.prepare('SELECT * FROM pos_shifts WHERE id=?').get(id(shiftId));if(!shift)throw Error('الوردية غير موجودة');if(shift.user_id!==user.id&&user.role!=='owner')fail('لا يمكنك إقفال وردية مستخدم آخر');

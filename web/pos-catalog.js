@@ -1,4 +1,4 @@
-export function mountPosCatalog({ root, api, esc, money, addItem }) {
+export function mountPosCatalog({ root, api, esc, money, addItem, pricing }) {
   const find = selector => root.querySelector(selector);
   const search = find('#pos-search'), grid = find('.product-grid');
   const previous = find('#pos-previous'), next = find('#pos-next'), summary = find('#pos-results');
@@ -20,7 +20,7 @@ export function mountPosCatalog({ root, api, esc, money, addItem }) {
       previous.disabled = page <= 1;
       next.disabled = page >= result.pages;
       summary.textContent = result.total ? `${result.total} صنف · صفحة ${page} من ${result.pages}` : 'لا توجد أصناف مطابقة';
-      grid.innerHTML = result.rows.map((item, index) => `<button type="button" data-product="${index}"><span>◇</span><b>${esc(item.name_ar)}</b><small>${money(item.unit_price)} ر.س / ${esc(item.base_unit)}</small><small dir="ltr">${esc(item.barcode || '')}</small></button>`).join('');
+      grid.innerHTML = result.rows.map((item, index) => `<button type="button" data-product="${index}"><span>◇</span><b>${esc(item.name_ar)}</b><small>${money(item.unit_price)} ر.س / ${esc(item.base_unit)}</small>${pricing.wholesale&&item.wholesale_price!=null?`<small>جملة ${money(item.wholesale_price)} ر.س</small>`:''}<small dir="ltr">${esc(item.barcode || '')}</small></button>`).join('');
       for (const button of grid.querySelectorAll('[data-product]')) {
         button.onclick = () => {
           try {
@@ -67,7 +67,7 @@ export function mountPosCatalog({ root, api, esc, money, addItem }) {
       const { item } = await api('pos/catalog/barcode?' + new URLSearchParams({ code }));
       if (!root.isConnected) return;
       if (item) addItem(item);
-      message.textContent = item ? 'أضيف: ' + item.name_ar : 'لم نجد صنفًا بهذا الباركود: ' + code;
+      message.textContent = item ? 'أضيف: ' + item.name_ar + (item.scale_code?' · '+item.scale_qty+' كجم':'') : 'لم نجد صنفًا بهذا الباركود: ' + code;
     }).catch(error => {
       if (root.isConnected) message.textContent = error.message;
     }).finally(() => { form.dataset.pending = String(--pending); });

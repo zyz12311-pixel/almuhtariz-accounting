@@ -8,7 +8,7 @@ await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const base=`http://127.0.0.1:${server.address().port}`;
 const call=async(method,p,body,cookie='')=>{if(p==='/api/pos/sales'&&body&&!body.request_id)body={...body,request_id:crypto.randomUUID()};const r=await fetch(base+p,{method,headers:{...(cookie?{cookie}:{}),...(body?{'content-type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});const t=await r.text();let j;try{j=JSON.parse(t)}catch{j=t}return {st:r.status,j,r};};
 try {
- assert.ok(fs.existsSync(file));assert.equal(db.prepare('SELECT COUNT(*) n FROM schema_migrations').get().n,15);
+ assert.ok(fs.existsSync(file));assert.equal(db.prepare('SELECT COUNT(*) n FROM schema_migrations').get().n,17);
  await call('POST','/api/setup',{username:'owner',password:'password123',company_name:'متجر',activity:'trade'});
  let login=await call('POST','/api/login',{username:'owner',password:'password123'});const owner=login.r.headers.get('set-cookie').split(';')[0];
  await call('PUT','/api/settings/company',{name_ar:'متجر',vat_number:'300000000000003',cr_number:'1234567890',street:'شارع الاختبار',building_number:'1234',district:'حي الاختبار',city:'الرياض',postal_code:'12345',country_code:'SA'},owner);
@@ -48,6 +48,78 @@ try {
  assert.equal((await call('POST','/api/warehouses',{name:'غير مصرح'},cashier)).st,403);
  const boxed=await call('POST','/api/pos/sales',{pos_id:2,lines:[{item_id:tracked.j.id,item_unit_id:saved.units[0].id,qty:1,unit_price:0}]},cashier);assert.equal(boxed.st,200,JSON.stringify(boxed.j));
  assert.equal((await call('GET','/api/items',null,owner)).j.find(i=>i.id===tracked.j.id).stock_qty,12);
+
+ const sale=(lines,terms={},cookie=cashier)=>call('POST','/api/pos/sales',{pos_id:2,lines,...terms},cookie);
+ const ratePath='/api/users/'+employee.j.id+'/pos-pricing';
+ const pricing={discount_limit:'10',wholesale:true};
+ assert.equal((await call('PUT',ratePath,pricing,cashier)).st,403);
+ assert.equal((await sale([{item_id:item,qty:1,pos_discount:1}])).st,403);
+ assert.equal((await sale([{item_id:item,qty:1}],{price_level:'wholesale'})).st,403);
+ assert.equal((await call('PUT',ratePath,pricing,owner)).st,200);
+ assert.equal((await sale([{item_id:item,qty:1,override_price:1}])).st,403);
+ assert.equal((await sale([{item_id:item,qty:1,pos_discount:'10.01'}])).st,403);
+ assert.equal((await call('PUT','/api/items/'+tracked.j.id,{wholesale_price:'1.50',
+  units:[{id:saved.units[0].id,name:'كرتون',factor:12,unit_price:20,wholesale_price:18,barcode:'UNIT-12'}]},owner)).st,200);
+
+ assert.equal((await call('PUT','/api/settings/pos_control',{require_shift:true},owner)).st,200);
+ assert.match((await sale([{item_id:item,qty:1}])).j.error,/وردية/);
+ const shift=(await call('POST','/api/pos/shifts',{request_id:crypto.randomUUID(),pos_id:2,opening_cash:'100'},cashier));
+ assert.equal(shift.st,200,JSON.stringify(shift.j));
+ const cashTerms={price_level:'wholesale',request_id:crypto.randomUUID()};
+ const cashLine={item_id:tracked.j.id,item_unit_id:saved.units[0].id,qty:1,pos_discount:'10'};
+ const cash=await sale([cashLine],cashTerms);
+ assert.equal(cash.st,200,JSON.stringify(cash.j));
+ const cashInvoice=(await call('GET','/api/invoices/'+cash.j.id,null,cashier)).j;
+ assert.equal(cashInvoice.subtotal,1620);
+ assert.equal(cashInvoice.lines[0].list_price,1800);
+ assert.equal(cashInvoice.lines[0].discount_rate,1000);
+ assert.equal((await sale([{...cashLine,pos_discount:9}],cashTerms)).st,409);
+
+ const bank=await sale([{item_id:item,qty:1}],{payment:'bank',price_level:'wholesale'});
+ assert.equal(bank.st,200);
+ const party=await call('POST','/api/parties',{name_ar:'عميل وردية',kind:'customer'},owner);
+ assert.equal(party.st,200);
+ assert.equal((await sale([{item_id:item,qty:1}],{payment:'credit',party_id:party.j.id})).st,200);
+ const refund=await call('POST','/api/pos/returns',{request_id:crypto.randomUUID(),invoice_id:cash.j.id,
+  reason:'اختبار وردية',lines:[{line_no:1,qty:1}]},cashier);
+ assert.equal(refund.st,200,JSON.stringify(refund.j));
+ const closed=await call('POST','/api/pos/shifts/'+shift.j.id+'/close',{counted_cash:99},cashier);
+ assert.equal(closed.st,200);
+ assert.deepEqual([closed.j.cash_sales,closed.j.bank_sales,closed.j.credit_sales,closed.j.expected_cash,closed.j.variance,closed.j.documents],[0,115,115,100,-1,4]);
+ assert.equal((await sale([cashLine],cashTerms)).j.id,cash.j.id);
+ assert.match((await sale([{item_id:item,qty:1}])).j.error,/وردية/);
+ await call('PUT','/api/settings/pos_control',{require_shift:false},owner);
+
+ const weightItem=await call('POST','/api/items',{name_ar:'صنف بالوزن',unit_price:20,wholesale_price:17,
+  scale_plu:'00042',unit_code:'KGM',base_unit:'كجم',track_stock:true,opening_qty:10,opening_unit_cost:5},owner);
+ assert.equal(weightItem.st,200,JSON.stringify(weightItem.j));
+ const label=payload=>payload+((10-[...payload].reduce((sum,digit,i)=>sum+Number(digit)*(i%2?3:1),0)%10)%10);
+ const weightCode=label('200004201250'),priceCode=label('200004200750');
+ const scan=code=>call('GET','/api/pos/catalog/barcode?code='+code,null,cashier);
+ assert.equal((await scan(weightCode)).j.item,null);
+ assert.equal((await call('PUT','/api/settings/pos_scale',{mode:'weight',prefix:'20'},cashier)).st,403);
+ assert.equal((await call('PUT','/api/settings/pos_scale',{mode:'weight',prefix:'20'},owner)).st,200);
+ assert.equal((await scan(weightCode.slice(0,-1)+(Number(weightCode.at(-1))+1)%10)).st,400);
+ assert.equal((await scan(label('200004301250'))).st,400);
+ const scanned=await scan(weightCode);
+ assert.equal(scanned.j.item.scale_qty,1.25);
+ const weighed={item_id:weightItem.j.id,qty:1.25,scale_code:weightCode,scale_mode:'weight'};
+ assert.equal((await sale([{...weighed,qty:1}])).st,400);
+ const weighedSale=await sale([weighed],{price_level:'wholesale'});
+ assert.equal(weighedSale.st,200,JSON.stringify(weighedSale.j));
+ assert.equal((await call('GET','/api/invoices/'+weighedSale.j.id,null,cashier)).j.subtotal,2125);
+ assert.equal((await call('PUT','/api/settings/pos_scale',{mode:'price'},owner)).st,200);
+ assert.equal((await scan(priceCode)).j.item.scale_qty,0.375);
+ const priced={item_id:weightItem.j.id,qty:0.375,scale_code:priceCode,scale_mode:'price'};
+ assert.equal((await sale([{...priced,pos_discount:1}])).st,400);
+ const pricedSale=await sale([priced,priced],{price_level:'wholesale'});
+ assert.equal(pricedSale.st,200,JSON.stringify(pricedSale.j));
+ const packed=(await call('GET','/api/invoices/'+pricedSale.j.id,null,cashier)).j;
+ assert.deepEqual(packed.lines.map(line=>line.net),[750,750]);
+ assert.equal((await call('GET','/api/items',null,owner)).j.find(i=>i.id===weightItem.j.id).stock_qty,8);
+ const manual=await sale([{item_id:item,qty:1,override_price:'90',pos_discount:'5'}],{pos_id:1},owner);
+ assert.equal(manual.st,200,JSON.stringify(manual.j));
+ assert.equal((await call('GET','/api/invoices/'+manual.j.id,null,owner)).j.subtotal,8550);
  console.log('نجحت اختبارات الباركود وصلاحيات العامل والأسعار المعتمدة وحصر الطباعة ومواقع البيع');
 } finally {server.close();db.close();}
-const reopened=openDb(file);assert.equal(reopened.prepare('SELECT COUNT(*) n FROM schema_migrations').get().n,15);assert.equal(reopened.prepare('SELECT barcode FROM items LIMIT 1').get().barcode,'0001234567890');reopened.close();
+const reopened=openDb(file);assert.equal(reopened.prepare('SELECT COUNT(*) n FROM schema_migrations').get().n,17);assert.equal(reopened.prepare('SELECT barcode FROM items LIMIT 1').get().barcode,'0001234567890');reopened.close();

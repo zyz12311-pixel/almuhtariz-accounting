@@ -8,6 +8,13 @@ function setTrackingItem(row,item){
  row.trackingItem=item;const button=$('[data-sale-tracking]',row);button.hidden=!item||!['lot','serial'].includes(item.tracking_mode);
  const count=JSON.parse(row.dataset.tracking||'[]').length;button.textContent=count?'الهويات ('+count+')':'دفعات أو تسلسلات';
 }
+function updatePosPrice(row){
+ const item=row.trackingItem;
+ if(!item)return;
+ const wholesale=item.scale_mode!=='price'&&$('#pos-price-level')?.value==='wholesale';
+ const listed=(wholesale?item.wholesale_price:null)??item.unit_price;
+ $('.u',row).value=$('.pos-override',row)?.value||listed;
+}
 
 
 async function api(p, o = {}) {
@@ -118,12 +125,14 @@ const pages = {
   },
   async new() {
     const isCashier=S.state.user.role==='staff',isPos=location.hash.slice(1)==='pos'||isCashier;
-    [S.parties,S.pos]=await Promise.all([api(isPos?'pos/customers':'parties'),api(isPos?'pos/points':'pos')]);
+    const [parties,points,pricing]=await Promise.all([api(isPos?'pos/customers':'parties'),api(isPos?'pos/points':'pos'),isPos?api('pos/pricing'):null]);
+    S.parties=parties;S.pos=points;
     S.items=[];
     if(!isPos)S.parties=S.parties.filter(p=>['customer','both'].includes(p.kind));
     shell(`<h1>فاتورة جديدة</h1><div class="card"><div class="row"><label>العميل<select id="party"><option value="">— بدون —</option>${S.parties.map(p => `<option value="${p.id}">${esc(p.name_ar)}</option>`).join('')}</select></label>
     <label>نقطة البيع<select id="pos">${S.pos.filter(p => p.active).map(p => `<option value="${p.id}">${esc(p.name)} (${esc(p.prefix)})</option>`).join('')}</select></label>
     <label>نوع الفاتورة<select id="invoice-kind"><option value="">حسب بيانات العميل</option><option value="standard">فاتورة ضريبية</option><option value="simplified">فاتورة ضريبية مبسطة</option></select></label><label>تاريخ التوريد<input id="supply-date" type="date" value="${S.state.today}"></label><label>الدفع<select id="pay"><option value="cash">نقدًا</option><option value="bank">بنك</option><option value="credit">آجل</option></select></label></div>
+    ${pricing?.wholesale?'<label>مستوى سعر السلة<select id="pos-price-level"><option value="retail">تجزئة</option><option value="wholesale">جملة</option></select></label><p class="hint">تُحسب الوحدة بسعر التجزئة عند ترك سعر الجملة فارغًا.</p>':''}
     <table id="ln"><thead><tr><th>الوصف</th><th>الكمية</th><th>السعر</th><th>ضريبة %</th><th>الإجمالي</th><th></th></tr></thead><tbody></tbody></table>
     <p class="hint">زر «اختيار صنف» يربط البند بالمخزون والوحدة. الوصف المكتوب دون اختيار صنف بند حر غير مخزني.</p><datalist id="dl">${S.items.map(i => `<option value="${esc(i.name_ar)}">`).join('')}</datalist>
     <div class="row" style="margin-top:10px"><button id="add">+ بند</button><div class="num" id="tt" style="flex:2;text-align:end;font-weight:700"></div></div>
@@ -134,29 +143,48 @@ const pages = {
       $('[data-sale-tracking]',tr).onclick=guard(async()=>{const item=tr.trackingItem;if(!item)return;const factor=item.unit_factor_micro||item.units?.find(u=>u.id===item.item_unit_id)?.factor_micro||1000000;const {editTracking}=await import('./tracking-editor.js');const result=await editTracking({api,esc,mode:item.tracking_mode,itemId:item.id,posId:Number($('#pos').value),forSale:true,expectedQty:Number($('.q',tr).value)*factor/1000000,initial:JSON.parse(tr.dataset.tracking||'[]')});if(result!==null){tr.dataset.tracking=JSON.stringify(result);setTrackingItem(tr,item);$('.q',tr).dispatchEvent(new Event('input',{bubbles:true}));}});
       tr.oninput = e => { if (e.target.classList.contains('d')) { const it = S.items.find(i => i.name_ar === e.target.value); tr.dataset.itemId=it?String(it.id):'';tr.dataset.itemUnitId=it?.item_unit_id?String(it.item_unit_id):'';setTrackingItem(tr,it);if (it) { $('.u', tr).value = it.unit_price; $('.v', tr).value = it.vat_rate;$('.tc',tr).value=it.tax_category||'S';$('.ec',tr).value=it.exemption_code||'';$('.er',tr).value=it.exemption_reason||''; } }if(e.target.classList.contains('tc'))$('.v',tr).value=$('.tc',tr).value==='S'?15:0;$('.ec',tr).hidden=$('.tc',tr).value==='S';$('.er',tr).hidden=$('.tc',tr).value==='S';calc(); };
       if(!isPos){const pick=document.createElement('button');pick.type='button';pick.textContent='اختيار صنف';$('.d',tr).after(pick);pick.onclick=guard(async()=>{const {chooseItem}=await import('./choose-item.js'),item=await chooseItem({api,esc,units:true});if(!item)return;S.items=S.items.filter(i=>i.id!==item.id||i.item_unit_id!==item.item_unit_id);S.items.push(item);$('.d',tr).value=item.name_ar;tr.dataset.itemId=item.id;tr.dataset.itemUnitId=item.item_unit_id||'';setTrackingItem(tr,item);$('.u',tr).value=item.unit_price;$('.v',tr).value=item.vat_rate;$('.tc',tr).value=item.tax_category||'S';$('.ec',tr).value=item.exemption_code||'';$('.er',tr).value=item.exemption_reason||'';$('.ec',tr).hidden=$('.tc',tr).value==='S';$('.er',tr).hidden=$('.tc',tr).value==='S';calc();});$('.u',tr).parentElement.insertAdjacentHTML('beforeend','<label class="line-discount">خصم %<input class="disc" type="number" value="0" min="0" max="100" step="0.01" aria-label="نسبة خصم الوحدة"></label>');}
-      if(isPos){for(const selector of ['.d','.u','.v','.ec','.er'])$(selector,tr).readOnly=true;$('.tc',tr).disabled=true;}
+      if(isPos){
+        for(const selector of ['.d','.u','.v','.ec','.er'])$(selector,tr).readOnly=true;
+        $('.tc',tr).disabled=true;
+        const priceCell=$('.u',tr).parentElement;
+        if(pricing.override)priceCell.insertAdjacentHTML('beforeend','<label class="line-discount">سعر يدوي اختياري<input class="pos-override" type="number" min="0" step="0.01"></label>');
+        if(pricing.discount_limit>0)priceCell.insertAdjacentHTML('beforeend',`<label class="line-discount">خصم %<input class="disc" type="number" value="0" min="0" max="${pricing.discount_limit}" step="0.01"></label>`);
+        if($('.pos-override',tr))$('.pos-override',tr).oninput=()=>updatePosPrice(tr);
+      }
       $('button.d', tr).onclick = () => { tr.remove(); calc(); }; tb.append(tr); };
     const rows = () => $$('tr', tb).map(tr => ({ item_id:Number(tr.dataset.itemId)||null,item_unit_id:Number(tr.dataset.itemUnitId)||null, tracking:JSON.parse(tr.dataset.tracking||'[]'), description: $('.d', tr).value, qty: +$('.q', tr).value, unit_price: +$('.u', tr).value,discount_rate:Number($('.disc',tr)?.value||0), vat_rate:+$('.v',tr).value,tax_category:$('.tc',tr).value,exemption_code:$('.ec',tr).value,exemption_reason:$('.er',tr).value }));
     const calc=()=>{const lines=rows(),groups=new Map();let sub=0;$$('tr',tb).forEach((tr,index)=>{const line=lines[index],rate=Math.round(line.discount_rate*100),list=Math.round(line.unit_price*100),unit=list>=0&&Number.isSafeInteger(list)&&rate>=0&&rate<=10000?Number((BigInt(list)*BigInt(10000-rate)+5000n)/10000n):0,net=Math.round(line.qty*unit),vat=Math.round(net*line.vat_rate/100);sub+=net;const key=[line.tax_category,line.vat_rate,line.exemption_code].join('|');if(!groups.has(key))groups.set(key,{base:0,rate:line.vat_rate});groups.get(key).base+=net;$('.t',tr).textContent=money((net+vat)/100);});const vat=[...groups.values()].reduce((s,g)=>s+Math.round(g.base*g.rate/100),0);$('#tt').textContent='بعد خصم الوحدة: قبل الضريبة '+money(sub/100)+' + ضريبة '+money(vat/100)+' = '+money((sub+vat)/100);};
     $('#add').onclick = () => { addRow(); calc(); }; addRow(); calc();
+    $('#pos-price-level')?.addEventListener('change',()=>{
+      $$('tr',tb).forEach(updatePosPrice);
+      calc();
+    });
     const save = draft => guard(async () => {
       if (isPos && Number($('#barcode-form')?.dataset.pending)) throw Error('انتظر اكتمال قراءة الباركود');
       if ($$('tr', tb).some(row => row.trackingItem?.unavailable)) throw Error('أزل البنود غير المتاحة من السلة قبل الإصدار');
+      if(isPos&&$$('.disc,.pos-override',tb).some(input=>!input.reportValidity()))return;
       const lines = rows();
+      if(isPos)$$('tr',tb).forEach((row,index)=>{
+        lines[index].pos_discount=$('.disc',row)?.value||'0';
+        lines[index].override_price=$('.pos-override',row)?.value||null;
+        lines[index].scale_code=row.trackingItem?.scale_code;
+        lines[index].scale_mode=row.trackingItem?.scale_mode;
+      });
       if (!lines.length || lines.some(l => !l.description.trim() || !Number.isFinite(l.qty) || l.qty <= 0 || !Number.isFinite(l.unit_price) || l.unit_price < 0 || !Number.isFinite(l.vat_rate) || l.vat_rate < 0 || l.vat_rate > 100)) throw new Error('أكمل وصف كل بند والكمية والسعر ونسبة الضريبة');
       if ($('#pay').value === 'credit' && !$('#party').value) throw new Error('اختر العميل للفاتورة الآجلة');
       if (!draft && !(await reviewInvoice($('#tt').textContent, lines.length))) return;
       $('#issue').disabled = true; $('#draft').disabled = true;
-      let r; try { r = await api(isPos?'pos/sales':'invoices', { method: 'POST', body: { request_id:isPos?S.saleRequestId:undefined,invoice_kind:$('#invoice-kind').value||undefined,supply_date:$('#supply-date').value, lines, party_id: +$('#party').value || null, pos_id: +$('#pos').value, payment: $('#pay').value, draft } }); } catch(e) { $('#issue').disabled = false; $('#draft').disabled = false; throw e; }
+      let r; try { r = await api(isPos?'pos/sales':'invoices', { method: 'POST', body: { request_id:isPos?S.saleRequestId:undefined,price_level:isPos?$('#pos-price-level')?.value:undefined,invoice_kind:$('#invoice-kind').value||undefined,supply_date:$('#supply-date').value, lines, party_id: +$('#party').value || null, pos_id: +$('#pos').value, payment: $('#pay').value, draft } }); } catch(e) { $('#issue').disabled = false; $('#draft').disabled = false; throw e; }
       if(isPos)await globalThis.AlmuhtarizStore?.remove(localScope(),'sale','drafts');
       if (!draft) window.open(`/api/invoices/${r.id}/html?profile=${location.hash.slice(1)==='pos'||S.state.user.role==='staff'?'pos':'accountant'}`, '_blank'); if(isPos){await pages.pos();msg('تم إصدار البيع وحفظه محليًا',true);}else location.hash='invoices'; });
     $('#issue').onclick = save(false); $('#draft').onclick = save(true);
     if(!isPos){const {attachQuoteAction}=await import('./quotations.js');attachQuoteAction({api,rows,S,esc,onSaved:async()=>{location.hash='quotes';}});}
     if(isPos){$('#draft').hidden=true;$('#add').hidden=true;$('#invoice-kind').disabled=true;}
+    return pricing;
   },
   async pos() {
     if(workspace!=='trade'&&S.state.user.role!=='staff'){shell('<div class="card"><h1>نقطة البيع التجارية</h1><p>اختر النشاط التجاري لفتح نقطة البيع وقراءة الباركود.</p><button id="open-trade" class="p">فتح القسم التجاري</button></div>');$('#open-trade').onclick=()=>{workspace='trade';localStorage.setItem('smartz.workspace',workspace);pages.pos();};return;}
-    workspace='trade';S.saleRequestId=newSaleRequestId();await pages.new();$('main h1').textContent='نقطة البيع التجارية';
+    workspace='trade';S.saleRequestId=newSaleRequestId();const pricing=await pages.new();$('main h1').textContent='نقطة البيع التجارية';
     const catalog=document.createElement('section');catalog.className='card pos-catalog';
     catalog.innerHTML=`<div class="section-heading"><div><h3>امسح، أضف، أصدر</h3><p>قارئ باركود USB أو Bluetooth يعمل كلوحة مفاتيح وينهي القراءة بزر Enter.</p></div><span class="tag" id="local-storage-state">جارٍ تهيئة الذاكرة المحلية…</span></div>
     <form id="barcode-form" class="barcode-form"><label for="barcode-input">قراءة الباركود<input id="barcode-input" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="امسح الباركود أو اكتبه ثم اضغط Enter" dir="ltr" maxlength="80" disabled></label><button type="submit" class="p" disabled>إضافة الصنف</button><button type="button" id="clear-pos-cart" disabled>سلة جديدة</button></form>
@@ -176,12 +204,14 @@ const pages = {
       const lines=$$('#ln tbody tr').filter(row=>row.dataset.itemId).map(row=>({
         item_id:Number(row.dataset.itemId),item_unit_id:Number(row.dataset.itemUnitId)||null,
         qty:Number($('.q',row).value),tracking:JSON.parse(row.dataset.tracking||'[]'),
+        discount:$('.disc',row)?.value||'0',override:$('.pos-override',row)?.value||null,
+        scale_code:row.trackingItem?.scale_code,scale_mode:row.trackingItem?.scale_mode,
       }));
-      globalThis.AlmuhtarizStore?.put(scope,'sale',{request_id:S.saleRequestId,lines,pos_id:Number($('#pos').value),party_id:Number($('#party').value)||null,payment:$('#pay').value},'drafts');
+      globalThis.AlmuhtarizStore?.put(scope,'sale',{request_id:S.saleRequestId,lines,price_level:$('#pos-price-level')?.value,pos_id:Number($('#pos').value),party_id:Number($('#party').value)||null,payment:$('#pay').value},'drafts');
     };
-    const addItem=(item,quantity=1)=>{
+    const addItem=(item,quantity=item.scale_qty??1)=>{
       const rows=$$('#ln tbody tr');
-      let row=rows.find(row=>Number(row.dataset.itemId)===item.id&&(Number(row.dataset.itemUnitId)||null)===item.item_unit_id);
+      let row=item.scale_code?null:rows.find(row=>!row.trackingItem?.scale_code&&Number(row.dataset.itemId)===item.id&&(Number(row.dataset.itemUnitId)||null)===item.item_unit_id);
       if(row) quantity=Math.round((Number($('.q',row).value)+quantity)*1000000)/1000000;
       else {
         row=rows.find(row=>!row.dataset.itemId);
@@ -191,14 +221,17 @@ const pages = {
         }
       }
       row.dataset.itemId=String(item.id);row.dataset.itemUnitId=item.item_unit_id?String(item.item_unit_id):'';
-      $('.d',row).value=item.name_ar;$('.q',row).value=quantity;$('.u',row).value=item.unit_price;$('.v',row).value=item.vat_rate;
+      $('.d',row).value=item.name_ar;$('.q',row).value=quantity;$('.v',row).value=item.vat_rate;
+      $('.q',row).readOnly=Boolean(item.scale_code);
+      for(const input of $$('.disc,.pos-override',row))input.disabled=item.scale_mode==='price';
       $('.tc',row).value=item.tax_category||'S';$('.ec',row).value=item.exemption_code||'';$('.er',row).value=item.exemption_reason||'';
-      setTrackingItem(row,item);$('.q',row).dispatchEvent(new Event('input',{bubbles:true}));
+      setTrackingItem(row,item);updatePosPrice(row);$('.q',row).dispatchEvent(new Event('input',{bubbles:true}));
       return row;
     };
     $('#ln').addEventListener('input',persist);
     $('#ln').addEventListener('click',event=>{if(event.target.closest('button'))queueMicrotask(persist);});
     for(const id of ['party','pay','pos'])$('#'+id).addEventListener('change',persist);
+    $('#pos-price-level')?.addEventListener('change',persist);
     clear.onclick=guard(async()=>{
       if(Number($('#barcode-form').dataset.pending))throw Error('انتظر اكتمال قراءة الباركود');
       const wasRestoring=restoring;
@@ -232,11 +265,19 @@ const pages = {
           }
           if(!catalog.isConnected)return;
           if(typeof draft.request_id==='string')S.saleRequestId=draft.request_id;
+          if(draft.price_level==='wholesale'&&pricing.wholesale)$('#pos-price-level').value='wholesale';
           let missing=0;
           for(const line of lines){
-            const item=found.get(key(line))||{id:line.item_id,item_unit_id:line.item_unit_id||null,name_ar:'بند غير متاح #'+line.item_id,unit_price:0,vat_rate:15,unavailable:true};
+            const selected=found.get(key(line))||{id:line.item_id,item_unit_id:line.item_unit_id||null,name_ar:'بند غير متاح #'+line.item_id,unit_price:0,vat_rate:15,unavailable:true};
+            const item=line.scale_code?{...selected,scale_code:line.scale_code,scale_mode:line.scale_mode}:selected;
             if(item.unavailable)missing++;
             const row=addItem(item,line.qty);
+            if(item.scale_mode!=='price'){
+              if($('.disc',row)&&Number(line.discount)<=pricing.discount_limit)$('.disc',row).value=line.discount||'0';
+              if($('.pos-override',row))$('.pos-override',row).value=line.override??'';
+            }
+            updatePosPrice(row);
+            $('.q',row).dispatchEvent(new Event('input',{bubbles:true}));
             if(Array.isArray(line.tracking)){row.dataset.tracking=JSON.stringify(line.tracking);setTrackingItem(row,item);}
           }
           if(S.pos.some(point=>point.id===draft.pos_id))$('#pos').value=draft.pos_id;
@@ -259,7 +300,7 @@ const pages = {
     if(!S.pos.length)msg('لم تُعيّن لك نقطة بيع مفعلة. راجع مالك المنشأة.');
     scanner.focus();
     const {mountPosCatalog}=await import('./pos-catalog.js');
-    if(catalog.isConnected)await mountPosCatalog({root:catalog,api,esc,money,addItem});
+    if(catalog.isConnected)await mountPosCatalog({root:catalog,api,esc,money,addItem,pricing});
   },
   async parties() {
     const rows=await api('parties');let editing=null;
@@ -342,17 +383,35 @@ const tabs = {
     const c=await api('settings/company');$('#tab').innerHTML='<div class="card"><h3>بيانات منشأة العميل</h3><p class="hint">هذه البيانات وشعار العميل تظهر في المستندات. شعار المحترز خاص بالتطبيق.</p><div id="company-form"></div></div>';bindCompanyForm(c);
   },
   async pos() {
-    const p = await api('pos'), L = S.state.license;
+    const [p,scale] = await Promise.all([api('pos'),api('settings/pos_scale')]), L = S.state.license;
     $('#tab').innerHTML = `<div class="card"><p>المرخّص: <b>${L.max_pos}</b> نقطة بيع. كل نقطة لها بادئة في رقم الفاتورة وتتشارك سلسلة الفرع.</p><div class="row"><label>الاسم<input id="n"></label><label>البادئة (A, B…)<input id="x" maxlength="6"></label><button class="p" id="add">إضافة نقطة</button></div></div>
     <div class="card"><table><tbody>${p.map(r => `<tr><td>${esc(r.name)}</td><td>${esc(r.prefix)}</td><td>${r.active ? 'مفعّلة' : 'موقوفة'}</td><td><a href="#" data-p="${r.id}" data-a="${r.active ? 0 : 1}">${r.active ? 'إيقاف' : 'تفعيل'}</a></td></tr>`).join('')}</tbody></table></div>`;
     $('#add').onclick = guard(async () => { await api('pos', { method: 'POST', body: { name: $('#n').value, prefix: $('#x').value } }); tabs.pos(); });
     $$('[data-p]').forEach(a => a.onclick = guard(async e => { e.preventDefault(); await api('pos/' + a.dataset.p, { method: 'PUT', body: { active: a.dataset.a === '1' } }); tabs.pos(); }));
+    $('#tab').insertAdjacentHTML('beforeend',`<form id="pos-scale-settings" class="card"><h3>ملصقات الميزان</h3><p class="hint">صيغة من 13 رقمًا. بادئة من رقمين، رمز الصنف من خمسة أرقام، ثم خمسة أرقام للوزن بالجرام أو سعر العبوة بالهللة قبل الضريبة، ورقم تحقق في النهاية.</p><div class="row"><label>محتوى الملصق<select name="mode"><option value="off">معطّل</option><option value="weight">الوزن بالجرام</option><option value="price">السعر قبل الضريبة</option></select></label><label>بادئة الملصق<input name="prefix" value="${esc(scale.prefix)}" pattern="2[0-9]" maxlength="2" dir="ltr" required></label><button class="p">حفظ ضبط الميزان</button></div><p class="hint">أدخل رمز الميزان في بطاقة الصنف بالكيلوجرام. ملصق السعر يعتمد سعر التجزئة لكل كيلوجرام لحساب الوزن ويثبت قيمة العبوة قبل الضريبة.</p></form>`);
+    const form=$('#pos-scale-settings');
+    form.elements.mode.value=scale.mode;
+    form.onsubmit=guard(async event=>{
+      event.preventDefault();
+      await api('settings/pos_scale',{method:'PUT',body:Object.fromEntries(new FormData(form))});
+      msg('تم حفظ ضبط الميزان',true);
+    });
   },
   async users() {
     const [users,points]=await Promise.all([api('users'),api('pos')]);const options=points.filter(p=>p.active).map(p=>'<option value="'+p.id+'">'+esc(p.name)+'</option>').join('');
     $('#tab').innerHTML='<div class="card"><h3>المستخدمون وصلاحيات نقطة البيع</h3><div class="row"><label>اسم المستخدم<input id="n"></label><label>كلمة المرور (8+)<input id="p" type="password" autocomplete="new-password"></label><label>الدور<select id="r"><option value="staff">عامل نقطة بيع فقط</option><option value="accountant">محاسب</option><option value="owner">مالك</option></select></label><label>نقطة بيع العامل<select id="user-pos">'+options+'</select></label><button class="p" id="add">إضافة المستخدم</button></div><p class="hint">عامل نقطة البيع لا يدخل المحاسبة أو الإعدادات أو إدارة الأصناف. يُصدر مبيعات الأصناف بالأسعار المسجلة ويطبع مبيعاته فقط.</p></div><div class="card"><table><thead><tr><th>المستخدم</th><th>الدور</th><th>نقطة البيع المسموحة</th></tr></thead><tbody>'+users.map(u=>'<tr><td>'+esc(u.username)+'</td><td>'+({owner:'مالك',accountant:'محاسب',staff:'عامل نقطة بيع'}[u.role])+'</td><td>'+(u.role==='staff'?'<select data-user-point="'+u.id+'">'+points.filter(p=>p.active).map(p=>'<option value="'+p.id+'" '+(u.pos_ids.includes(p.id)?'selected':'')+'>'+esc(p.name)+'</option>').join('')+'</select><button data-save-access="'+u.id+'">حفظ الصلاحية</button>':'—')+'</td></tr>').join('')+'</tbody></table></div>';
     $('#add').onclick=guard(async()=>{await api('users',{method:'POST',body:{username:$('#n').value,password:$('#p').value,role:$('#r').value,pos_id:Number($('#user-pos').value)}});await tabs.users();msg('تم إنشاء المستخدم وصلاحياته',true);});
     $$('[data-save-access]').forEach(button=>button.onclick=guard(async()=>{await api('users/'+button.dataset.saveAccess+'/pos-access',{method:'PUT',body:{pos_ids:[Number($('[data-user-point="'+button.dataset.saveAccess+'"]').value)]}});msg('تم تحديث نقطة البيع المسموحة',true);}));
+    const workers=users.filter(user=>user.role==='staff');
+    if(workers.length)$('#tab').insertAdjacentHTML('beforeend',`<div class="card"><h3>الأسعار والخصم للعامل</h3><p class="hint">التعديل اليدوي للسعر متاح للمالك والمحاسب.</p>${workers.map(user=>`<div class="row" data-pos-pricing="${user.id}"><b>${esc(user.username)}</b><label>حد خصم البند %<input data-limit type="number" min="0" max="100" step="0.01" required value="${user.pos_discount_limit/100}"></label><label><input data-wholesale type="checkbox" ${user.pos_wholesale?'checked':''}> السماح بسعر الجملة</label><button data-save-pricing>حفظ صلاحيات السعر</button></div>`).join('')}</div>`);
+    $$('[data-pos-pricing]').forEach(row=>{
+      $('[data-save-pricing]',row).onclick=guard(async()=>{
+        const limit=$('[data-limit]',row);
+        if(!limit.reportValidity())return;
+        await api('users/'+row.dataset.posPricing+'/pos-pricing',{method:'PUT',body:{discount_limit:limit.value,wholesale:$('[data-wholesale]',row).checked}});
+        msg('تم حفظ صلاحيات السعر والخصم',true);
+      });
+    });
   },
   async sys() {
     const L = (await api('state')).license;

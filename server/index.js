@@ -17,7 +17,9 @@ import { validateIdentity } from './compliance.js';
 import { calculateLines } from './money.js';
 import { appendAudit } from './audit.js';
 import {maintenance} from './maintenance.js';
-import { createPosSale } from './pos.js';
+import { createPosSale, posPricing } from './pos.js';
+import { scaledInteger } from './money.js';
+import { validateScaleSettings } from './pos-scale.js';
 import {listItems,saveItem} from './items.js';
 import {posCatalog,posBarcode,posSelection} from './pos-catalog.js';
 import {recordStock} from './inventory.js';
@@ -94,6 +96,8 @@ export function createApp({ dbFile, licensePath }) {
         setSetting(db, params.g, settings);
         if (Object.hasOwn(body,'logo')) setSetting(db,'company',{...getSetting(db,'company'),...validateCompany({logo:body.logo})});
       });
+    } else if (params.g === 'pos_scale') {
+      setSetting(db, params.g, validateScaleSettings({...getSetting(db,params.g),...body}));
     } else setSetting(db, params.g, body);
     return getSetting(db, params.g);
   }, { owner: true });
@@ -159,6 +163,7 @@ export function createApp({ dbFile, licensePath }) {
   route('POST','/api/stocktakes/:id/approve',({params,user})=>approveStocktake(db,user,params.id),{owner:true});
   route('GET','/api/pos/customers',()=>db.prepare("SELECT id,name_ar FROM parties WHERE kind IN ('customer','both') ORDER BY name_ar").all(),{cashier:true});
   route('GET','/api/pos/points',({user})=>user.role==='staff'?db.prepare('SELECT p.* FROM pos_points p JOIN pos_user_access a ON a.pos_id=p.id WHERE a.user_id=? AND p.active=1 ORDER BY p.id').all(user.id):db.prepare('SELECT * FROM pos_points WHERE active=1 ORDER BY id').all(),{cashier:true});
+  route('GET','/api/pos/pricing',({user})=>posPricing(db,user),{cashier:true});
   route('POST','/api/pos/sales',({user,body})=>({id:createPosSale(db,user,body)}),{cashier:true});
 
   // ---------- الفروع ونقاط البيع (بحدود الترخيص) ----------
@@ -173,7 +178,7 @@ export function createApp({ dbFile, licensePath }) {
   route('PUT', '/api/pos/:id', ({ params, body }) => { db.prepare('UPDATE pos_points SET active=? WHERE id=?').run(body.active ? 1 : 0, params.id); return { ok: true }; }, { owner: true });
 
   // ---------- المستخدمون ----------
-  route('GET', '/api/users', () => db.prepare('SELECT id,username,role,active FROM users').all().map(u=>({...u,pos_ids:db.prepare('SELECT pos_id FROM pos_user_access WHERE user_id=? ORDER BY pos_id').all(u.id).map(a=>a.pos_id)})), { owner: true });
+  route('GET', '/api/users', () => db.prepare('SELECT id,username,role,active,pos_discount_limit,pos_wholesale FROM users').all().map(u=>({...u,pos_ids:db.prepare('SELECT pos_id FROM pos_user_access WHERE user_id=? ORDER BY pos_id').all(u.id).map(a=>a.pos_id)})), { owner: true });
   route('POST', '/api/users', ({ body }) => {
     const L = lic(); if (db.prepare('SELECT COUNT(*) n FROM users WHERE active=1').get().n >= L.max_users) throw new HttpError(403, `بلغت الحد المرخّص من المستخدمين (${L.max_users})`);
     need(body.username && String(body.password || '').length >= 8 && ['owner', 'accountant', 'staff'].includes(body.role), 'بيانات المستخدم غير مكتملة');
@@ -192,6 +197,15 @@ export function createApp({ dbFile, licensePath }) {
     const ids=[...new Set(body.pos_ids.map(Number))];for(const id of ids)need(Number.isSafeInteger(id)&&db.prepare('SELECT 1 FROM pos_points WHERE id=? AND active=1').get(id),'نقطة بيع غير صالحة');
     db.prepare('DELETE FROM pos_user_access WHERE user_id=?').run(params.id);for(const id of ids)db.prepare('INSERT INTO pos_user_access VALUES(?,?)').run(params.id,id);return {ok:true};
   }),{owner:true});
+
+  route('PUT','/api/users/:id/pos-pricing',({params,body})=>{
+    const limit=Number(scaledInteger(body.discount_limit,2,'حد الخصم'));
+    need(limit<=10000&&typeof body.wholesale==='boolean','أدخل حد خصم من 0 إلى 100% وحدد صلاحية سعر الجملة');
+    const updated=db.prepare("UPDATE users SET pos_discount_limit=?,pos_wholesale=? WHERE id=? AND role='staff'")
+      .run(limit,Number(body.wholesale),params.id);
+    need(updated.changes,'اختر مستخدم نقطة بيع');
+    return {ok:true};
+  },{owner:true});
 
   // ---------- الفواتير ----------
   route('GET', '/api/invoices', () => db.prepare(`SELECT i.id,i.number,i.type,i.document_code,i.invoice_kind,i.environment,i.status,i.issue_date,i.total,p.name_ar party FROM invoices i
