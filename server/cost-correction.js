@@ -1,0 +1,16 @@
+import crypto from 'node:crypto';import {tx} from './db.js';import {scaledInteger,roundRatio} from './money.js';import {postEntry} from './core.js';import {appendAudit} from './audit.js';import {nowRiyadh} from './lib.js';
+export function correctLegacyCost(db,user,body){return tx(db,()=>{
+ if(user.role!=='owner'){const error=Error('تصحيح تكلفة الرصيد للمالك فقط');error.status=403;throw error;}
+ const request=String(body.request_id||'');if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(request))throw Error('معرف طلب UUID مطلوب');
+ const hash=crypto.createHash('sha256').update(JSON.stringify({actor:user.id,body})).digest('hex'),old=db.prepare('SELECT id,request_hash FROM stock_cost_corrections WHERE request_id=?').get(request);if(old){if(old.request_hash!==hash)throw Error('معرف الطلب مستخدم ببيانات مختلفة');return{id:old.id,replayed:true};}
+ const item=Number(body.item_id),warehouse=Number(body.warehouse_id);if(![item,warehouse,Number(body.expected_movement_id)].every(n=>Number.isSafeInteger(n)&&n>0))throw Error('اختر رصيدًا صالحًا');
+ const current=db.prepare('SELECT p.*,v.value_after,v.complete FROM stock_positions p JOIN stock_values v ON v.movement_id=p.last_movement_id WHERE p.item_id=? AND p.warehouse_id=?').get(item,warehouse);
+ if(!current||current.qty_micro<=0||current.complete||db.prepare('SELECT 1 FROM stock_cost_corrections WHERE movement_id=?').get(current.last_movement_id))throw Error('هذا الرصيد لا يحتاج تصحيح تكلفة قديمة');
+ if(current.last_movement_id!==Number(body.expected_movement_id)||current.qty_micro!==Number(body.expected_quantity_micro)||!Number.isSafeInteger(Number(body.expected_quantity_micro)))throw Error('تغير الرصيد منذ المعاينة؛ أعد تحميل التقرير');
+ const reason=String(body.reason||'').trim();if(!reason||reason.length>500)throw Error('مرجع أو سبب إثبات التكلفة مطلوب');const date=nowRiyadh().date;if(body.date&&body.date!==date)throw Error('تصحيح الرصيد الحالي يؤرخ باليوم');
+ if(db.prepare('SELECT 1 FROM accounting_locks WHERE id=1 AND closed_through>=?').get(date))throw Error('الفترة المحاسبية مقفلة');
+ const unitCost=Number(scaledInteger(body.unit_cost,2,'تكلفة الوحدة')),value=roundRatio(BigInt(current.qty_micro)*BigInt(unitCost),1000000n),difference=value-current.value_after;
+ let journal=null;if(difference)journal=Number(postEntry(db,{date,description:'إثبات تكلفة رصيد قديم · '+reason,source_type:'stock_cost_correction',branch_id:1,lines:[{account:'1401',[difference>0?'debit':'credit']:Math.abs(difference)},{account:'5298',[difference>0?'credit':'debit']:Math.abs(difference)}]}));
+ const correction=Number(db.prepare('INSERT INTO stock_cost_corrections(item_id,warehouse_id,movement_id,quantity_micro,previous_value,value_after,unit_cost,correction_date,reason,journal_id,actor_id,request_id,request_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(item,warehouse,current.last_movement_id,current.qty_micro,current.value_after,value,unitCost,date,reason,journal,user.id,request,hash).lastInsertRowid);
+ appendAudit(db,{actor:user.id,event:'stock.legacy_cost_confirmed',entity_type:'stock_cost_correction',entity_id:correction,details:{item,warehouse,quantity:current.qty_micro,previous_value:current.value_after,value_after:value,journal}});return{id:correction,replayed:false};
+});}

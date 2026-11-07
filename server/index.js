@@ -27,6 +27,7 @@ import {syncInfo,configureSync,syncBranch} from './sync.js';
 import {createQuotation,quotation,convertQuotation,cancelQuotation} from './quotations.js';
 import {commercialPrint} from './commercial-print.js';
 import {commercialList,shiftList,complianceList,posHistoryList} from './lists.js';
+import {correctLegacyCost} from './cost-correction.js';
 import {allocateVoucher,voucherDetails,outstandingDocuments,reverseManualJournal} from './settlements.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -130,6 +131,7 @@ export function createApp({ dbFile, licensePath }) {
   route('POST','/api/items',({body,user})=>saveItem(db,body,null,user.id));
   route('PUT','/api/items/:id',({params,body,user})=>saveItem(db,body,Number(params.id),user.id));
   route('GET','/api/warehouses',()=>db.prepare('SELECT * FROM warehouses ORDER BY id').all());
+  route('POST','/api/inventory/cost-corrections',({body,user})=>correctLegacyCost(db,user,body),{owner:true});
   route('GET','/api/inventory/valuation',()=>jobs.report('valuation'),{accountant:true});
   route('POST','/api/warehouses',({body})=>{const name=String(body.name||'').trim();need(name&&name.length<=100,'اسم المستودع مطلوب');return {id:db.prepare('INSERT INTO warehouses(name) VALUES(?)').run(name).lastInsertRowid};},{owner:true});
   route('PUT','/api/pos/:id/warehouse',({params,body})=>{need(db.prepare('SELECT 1 FROM warehouses WHERE id=? AND active=1').get(body.warehouse_id),'اختر مستودعًا فعالًا');need(db.prepare('SELECT 1 FROM pos_points WHERE id=?').get(params.id),'نقطة البيع غير موجودة');db.prepare('UPDATE pos_points SET warehouse_id=? WHERE id=?').run(body.warehouse_id,params.id);return {ok:true};},{owner:true});

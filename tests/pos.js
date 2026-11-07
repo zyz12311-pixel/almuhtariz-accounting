@@ -8,7 +8,7 @@ await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const base=`http://127.0.0.1:${server.address().port}`;
 const call=async(method,p,body,cookie='')=>{if(p==='/api/pos/sales'&&body&&!body.request_id)body={...body,request_id:crypto.randomUUID()};const r=await fetch(base+p,{method,headers:{...(cookie?{cookie}:{}),...(body?{'content-type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});const t=await r.text();let j;try{j=JSON.parse(t)}catch{j=t}return {st:r.status,j,r};};
 try {
- assert.ok(fs.existsSync(file));assert.equal(db.prepare('SELECT COUNT(*) n FROM schema_migrations').get().n,13);
+ assert.ok(fs.existsSync(file));assert.equal(db.prepare('SELECT COUNT(*) n FROM schema_migrations').get().n,14);
  await call('POST','/api/setup',{username:'owner',password:'password123',company_name:'متجر',activity:'trade'});
  let login=await call('POST','/api/login',{username:'owner',password:'password123'});const owner=login.r.headers.get('set-cookie').split(';')[0];
  await call('PUT','/api/settings/company',{name_ar:'متجر',vat_number:'300000000000003',cr_number:'1234567890',street:'شارع الاختبار',building_number:'1234',district:'حي الاختبار',city:'الرياض',postal_code:'12345',country_code:'SA'},owner);
@@ -19,7 +19,7 @@ try {
  const employee=await call('POST','/api/users',{username:'cashier',password:'password123',role:'staff',pos_id:1},owner);assert.equal(employee.st,200);
  login=await call('POST','/api/login',{username:'cashier',password:'password123'});const cashier=login.r.headers.get('set-cookie').split(';')[0];
  for(const p of ['/api/dashboard','/api/invoices','/api/items','/api/parties','/api/users','/api/backup','/api/settings/ui','/api/settings/company','/api/sync/status','/api/warehouses','/api/inventory/balances','/api/inventory/valuation','/api/purchases','/api/vouchers','/api/journals','/api/accounts','/api/quotations','/api/quotations/1/html','/api/purchases/1/html','/api/vouchers/1/html','/api/vouchers/1','/api/parties/1/outstanding?account=1201','/api/reports/ledger?account=1201&from=2026-01-01&to=2026-01-01','/api/accounting/lock','/api/inventory/movements?item_id=1']) assert.equal((await call('GET',p,null,cashier)).st,403,p);
- for(const p of ['/api/vouchers/1/allocations','/api/journals/1/reverse','/api/accounting/lock'])assert.equal((await call('POST',p,{},cashier)).st,403,p);
+ for(const p of ['/api/vouchers/1/allocations','/api/journals/1/reverse','/api/accounting/lock','/api/inventory/cost-corrections'])assert.equal((await call('POST',p,{},cashier)).st,403,p);
  assert.equal((await call('GET','/api/preferences/ui',null,cashier)).st,200);
  const catalog=(await call('GET','/api/pos/catalog',null,cashier)).j;assert.equal(catalog[0].barcode,'0001234567890');
  assert.equal((await call('POST','/api/items',{name_ar:'اختراق',unit_price:1},cashier)).st,403);
@@ -50,4 +50,4 @@ try {
  assert.equal((await call('GET','/api/items',null,owner)).j.find(i=>i.id===tracked.j.id).stock_qty,12);
  console.log('نجحت اختبارات الباركود وصلاحيات العامل والأسعار المعتمدة وحصر الطباعة ومواقع البيع');
 } finally {server.close();db.close();}
-const reopened=openDb(file);assert.equal(reopened.prepare('SELECT COUNT(*) n FROM schema_migrations').get().n,13);assert.equal(reopened.prepare('SELECT barcode FROM items LIMIT 1').get().barcode,'0001234567890');reopened.close();
+const reopened=openDb(file);assert.equal(reopened.prepare('SELECT COUNT(*) n FROM schema_migrations').get().n,14);assert.equal(reopened.prepare('SELECT barcode FROM items LIMIT 1').get().barcode,'0001234567890');reopened.close();

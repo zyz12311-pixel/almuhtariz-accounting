@@ -1,0 +1,10 @@
+export function attachCostCorrections({api,rows,host,esc,money,onSaved}){
+ const head=document.createElement('th');head.textContent='إثبات التكلفة';host.querySelector('thead tr').append(head);
+ const tableRows=[...host.querySelectorAll('tbody tr')];rows.forEach((row,index)=>{
+  const cell=document.createElement('td');tableRows[index].append(cell);if(row.complete||row.quantity_after<=0){cell.textContent='—';return;}
+  const button=document.createElement('button');button.textContent='إثبات تكلفة الرصيد';cell.append(button);button.onclick=()=>{
+   const dialog=document.querySelector('#dlg'),request=crypto.randomUUID();dialog.innerHTML='<h2>إثبات تكلفة رصيد قديم</h2><p>'+esc(row.name_ar)+' · '+esc(row.warehouse)+' · الرصيد '+esc(row.qty)+' '+esc(row.base_unit)+'</p><p>القيمة المسجلة حاليًا '+money(row.value)+' ر.س. يحفظ إثبات اليوم ولا يغير الحركات أو تكلفة المبيعات التاريخية. يُرحل فرق القيمة في حساب فروق وتسويات المخزون.</p><form><label>تكلفة الوحدة الأساسية المؤكدة<input name="unit_cost" type="number" min="0" step="0.01" required></label><label>مرجع أو سبب إثبات التكلفة<input name="reason" maxlength="500" required></label><label><input type="checkbox" required> التكلفة مستندة إلى بيانات راجعتها وليست قيمة تخمينية.</label><div class="msg" role="alert" hidden></div><button type="submit" class="p">حفظ الإثبات وقيده</button><button type="button" data-cancel>إغلاق</button></form>';dialog.showModal();dialog.querySelector('[data-cancel]').onclick=()=>dialog.close();
+   dialog.querySelector('form').onsubmit=async e=>{e.preventDefault();const submit=e.target.querySelector('[type=submit]');submit.disabled=true;try{await api('inventory/cost-corrections',{method:'POST',body:{...Object.fromEntries(new FormData(e.target)),request_id:request,item_id:row.item_id,warehouse_id:row.warehouse_id,expected_movement_id:row.last_movement_id,expected_quantity_micro:row.quantity_after}});dialog.close();await onSaved();}catch(error){const output=dialog.querySelector('[role=alert]');output.textContent=error.message;output.hidden=false;submit.disabled=false;}};
+  };
+ });
+}
