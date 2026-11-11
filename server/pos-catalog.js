@@ -22,17 +22,18 @@ function sellable(item, unit = null) {
   };
 }
 
-export function posCatalog(db, query) {
+export function posCatalog(db, query, activity = null) {
   const params = { page_size: 24, ...query };
   const { q, like, page_size } = pageQuery(params);
   if (page_size > 50) throw Error('الحد الأقصى للصفحة 50 صنفًا');
+  const activityClause = activity ? ' AND i.activity=?' : '';
   const result = paged(db, {
     select: itemFields,
     from: 'items i',
-    where: `i.active=1${q ? String.raw` AND (i.name_ar LIKE ? ESCAPE '\' OR i.sku LIKE ? ESCAPE '\' OR i.barcode LIKE ? ESCAPE '\' OR EXISTS (
+    where: `i.active=1${activityClause}${q ? String.raw` AND (i.name_ar LIKE ? ESCAPE '\' OR i.sku LIKE ? ESCAPE '\' OR i.barcode LIKE ? ESCAPE '\' OR EXISTS (
       SELECT 1 FROM item_units u WHERE u.item_id=i.id AND u.active=1 AND (u.barcode LIKE ? ESCAPE '\' OR u.name LIKE ? ESCAPE '\')
     ))` : ''}`,
-    params: q ? [like, like, like, like, like] : [],
+    params: activity ? q ? [activity, like, like, like, like, like] : [activity] : (q ? [like, like, like, like, like] : []),
     order: 'i.name_ar,i.id',
   }, params);
   if (!result.rows.length) return result;
@@ -47,24 +48,27 @@ export function posCatalog(db, query) {
   return { ...result, rows: result.rows.flatMap(item => [sellable(item), ...(unitsByItem.get(item.id) ?? []).map(unit => sellable(item, unit))]) };
 }
 
-export function posBarcode(db, value) {
+export function posBarcode(db, value, activity = null) {
   const barcode = normalizeBarcode(value);
   if (!barcode) throw Error('أدخل الباركود');
-  const base = db.prepare(`SELECT ${itemFields} FROM items i WHERE i.barcode=? AND i.active=1`).get(barcode);
+  const activityClause = activity ? ' AND i.activity=?' : '';
+  const base = db.prepare(`SELECT ${itemFields} FROM items i WHERE i.barcode=? AND i.active=1${activityClause}`).get(barcode, ...(activity ? [activity] : []));
   if (base) return sellable(base);
 
   const unit = db.prepare(`SELECT ${unitFields} FROM item_units WHERE barcode=? AND active=1`).get(barcode);
-  const byId = db.prepare(`SELECT ${itemFields} FROM items i WHERE i.id=? AND i.active=1`);
+  const byId = db.prepare(`SELECT ${itemFields} FROM items i WHERE i.id=? AND i.active=1${activityClause}`);
   if (unit) {
-    const item = byId.get(unit.item_id);
+    const item = byId.get(unit.item_id, ...(activity ? [activity] : []));
     return item ? sellable(item, unit) : null;
   }
   const label = scaleLabel(db, barcode);
-  return label ? {...sellable(byId.get(label.itemId)),scale_code:barcode,scale_mode:label.mode,scale_qty:label.qty} : null;
+  if (!label) return null;
+  const item = byId.get(label.itemId, ...(activity ? [activity] : []));
+  return item ? {...sellable(item),scale_code:barcode,scale_mode:label.mode,scale_qty:label.qty} : null;
 }
 
 // Resolve only the item/unit pairs present in an existing browser draft.
-export function posSelection(db, keys) {
+export function posSelection(db, keys, activity = null) {
   const pairs = String(keys ?? '').split(',');
   if (pairs.length > 200 || pairs.some(key => !/^[1-9]\d*:(0|[1-9]\d*)$/.test(key))) throw Error('بنود السلة غير صالحة');
   const selection = [...new Set(pairs)].map(key => key.split(':').map(Number));
@@ -72,7 +76,8 @@ export function posSelection(db, keys) {
 
   const itemIds = [...new Set(selection.map(([item]) => item))];
   const unitIds = [...new Set(selection.map(([, unit]) => unit).filter(Boolean))];
-  const items = new Map(db.prepare(`SELECT ${itemFields} FROM items i WHERE i.active=1 AND i.id IN (${placeholders(itemIds)})`).all(...itemIds).map(item => [item.id, item]));
+  const activityClause = activity ? ' AND i.activity=?' : '';
+  const items = new Map(db.prepare(`SELECT ${itemFields} FROM items i WHERE i.active=1 AND i.id IN (${placeholders(itemIds)})${activityClause}`).all(...itemIds, ...(activity ? [activity] : [])).map(item => [item.id, item]));
   const units = new Map(unitIds.length ? db.prepare(`SELECT ${unitFields} FROM item_units WHERE active=1 AND id IN (${placeholders(unitIds)})`).all(...unitIds).map(unit => [unit.id, unit]) : []);
   return selection.flatMap(([itemId, unitId]) => {
     const item = items.get(itemId), unit = units.get(unitId);

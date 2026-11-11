@@ -8,7 +8,7 @@ await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const base=`http://127.0.0.1:${server.address().port}`;
 const call=async(method,p,body,cookie='')=>{if(p==='/api/pos/sales'&&body&&!body.request_id)body={...body,request_id:crypto.randomUUID()};const r=await fetch(base+p,{method,headers:{...(cookie?{cookie}:{}),...(body?{'content-type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});const t=await r.text();let j;try{j=JSON.parse(t)}catch{j=t}return {st:r.status,j,r};};
 try {
- assert.ok(fs.existsSync(file));assert.equal(db.prepare('SELECT COUNT(*) n FROM schema_migrations').get().n,17);
+ assert.ok(fs.existsSync(file)); assert.equal(db.prepare('SELECT COUNT(*) n FROM schema_migrations').get().n,20);
  await call('POST','/api/setup',{username:'owner',password:'password123',company_name:'متجر',activity:'trade'});
  let login=await call('POST','/api/login',{username:'owner',password:'password123'});const owner=login.r.headers.get('set-cookie').split(';')[0];
  await call('PUT','/api/settings/company',{name_ar:'متجر',vat_number:'300000000000003',cr_number:'1234567890',street:'شارع الاختبار',building_number:'1234',district:'حي الاختبار',city:'الرياض',postal_code:'12345',country_code:'SA'},owner);
@@ -122,4 +122,4 @@ try {
  assert.equal((await call('GET','/api/invoices/'+manual.j.id,null,owner)).j.subtotal,8550);
  console.log('نجحت اختبارات الباركود وصلاحيات العامل والأسعار المعتمدة وحصر الطباعة ومواقع البيع');
 } finally {server.close();db.close();}
-const reopened=openDb(file);assert.equal(reopened.prepare('SELECT COUNT(*) n FROM schema_migrations').get().n,17);assert.equal(reopened.prepare('SELECT barcode FROM items LIMIT 1').get().barcode,'0001234567890');reopened.close();
+const reopened=openDb(file);assert.equal(reopened.prepare('SELECT COUNT(*) n FROM schema_migrations').get().n,20);assert.equal(reopened.prepare('SELECT barcode FROM items LIMIT 1').get().barcode,'0001234567890');reopened.close();

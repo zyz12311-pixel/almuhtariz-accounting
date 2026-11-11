@@ -6,6 +6,7 @@ import {scaledInteger} from './money.js';
 import {activeShift} from './operations.js';
 import {appendAudit} from './audit.js';
 import {scaleLabel} from './pos-scale.js';
+import {posPoint,companyActivity} from './activity.js';
 
 export function posPricing(db, user) {
  if(user.role!=='staff')return {discount_limit:100,wholesale:true,override:true};
@@ -33,43 +34,44 @@ export function normalizeBarcode(value) {
  return code;
 }
 export function canonicalPosSale(db,user,body) {
- const pos=Number(body.pos_id);if(!Number.isSafeInteger(pos)||pos<1)throw Error('اختر نقطة بيع');
- if(!db.prepare('SELECT 1 FROM pos_points WHERE id=? AND active=1').get(pos))throw Error('نقطة البيع غير مفعلة');
- if(user.role==='staff'&&!db.prepare('SELECT 1 FROM pos_user_access WHERE user_id=? AND pos_id=?').get(user.id,pos)) {const e=Error('نقطة البيع غير مسموحة لهذا العامل');e.status=403;throw e;}
- if(!Array.isArray(body.lines)||!body.lines.length||body.lines.length>200)throw Error('اختر من 1 إلى 200 بند');
- const level=body.price_level??'retail', permissions=posPricing(db,user);
- if(!['retail','wholesale'].includes(level))throw Error('مستوى السعر غير صالح');
- if(level==='wholesale'&&!permissions.wholesale)pricingDenied('سعر الجملة غير مسموح لهذا المستخدم');
- const quantities=new Map();
- for(const row of body.lines){
-  const id=Number(row.item_id),unit=row.item_unit_id==null||row.item_unit_id===''?null:Number(row.item_unit_id),qty=Number(row.qty);
-  if(!Number.isSafeInteger(id)||(unit!==null&&(!Number.isSafeInteger(unit)||unit<1))||!Number.isFinite(qty)||qty<=0||qty>1000000)throw Error('الصنف أو الكمية غير صالح');
-  const {discount,override}=priceTerms(row);
-  if(discount>Math.round(permissions.discount_limit*100))pricingDenied('الخصم يتجاوز الحد المسموح لهذا المستخدم');
-  if(override!==null&&!permissions.override)pricingDenied('تغيير السعر غير مسموح لهذا المستخدم');
-  const scaleCode=normalizeBarcode(row.scale_code);
-  const label=scaleCode?scaleLabel(db,scaleCode):null;
-  if(scaleCode&&(!label||label.itemId!==id||unit!==null||qty!==label.qty||row.scale_mode!==label.mode))throw Error('ملصق الميزان لا يطابق الصنف أو الكمية. أعد المسح');
-  if(label?.mode==='price'&&(override!==null||discount))throw Error('سعر العبوة محدد بملصق الميزان');
-  const key=label?'scale:'+quantities.size:id+':'+(unit||0),prior=quantities.get(key);
-  if(prior&&(prior.discount!==discount||prior.override!==override))throw Error('وحّد السعر والخصم لبنود الوحدة نفسها');
-  const amount=(prior?.quantityMicro||0n)+scaledInteger(row.qty,6,'الكمية');
-  if(amount>1000000000000n)throw Error('الكمية أكبر من المسموح');
-  quantities.set(key,{id,unit,qty:Number(amount)/1000000,quantityMicro:amount,discount,override,priceLabel:label?.mode==='price',tracking:[...(prior?.tracking||[]),...trackingInput(row.tracking)]});
- }
- if(body.party_id&&!db.prepare("SELECT 1 FROM parties WHERE id=? AND kind IN ('customer','both')").get(body.party_id))throw Error('العميل غير موجود');
- const lines=[];
- for(const {id,unit,qty,tracking,discount,override,priceLabel} of [...quantities.values()].sort((a,b)=>a.id-b.id||(a.unit||0)-(b.unit||0))){
-  const item=db.prepare('SELECT * FROM items WHERE id=? AND active=1').get(id);
-  if(!item)throw Error('صنف غير موجود أو موقوف');
+  const point=posPoint(db,user,body.pos_id);
+  const hasActivity = db.prepare("SELECT COUNT(*) n FROM pragma_table_info('pos_points') WHERE name='activity'").get().n > 0;
+  const activity = hasActivity ? (point.activity || companyActivity(db)) : null;
+  if(!Array.isArray(body.lines)||!body.lines.length||body.lines.length>200)throw Error('اختر من 1 إلى 200 بند');
+  const level=body.price_level??'retail', permissions=posPricing(db,user);
+  if(!['retail','wholesale'].includes(level))throw Error('مستوى السعر غير صالح');
+  if(level==='wholesale'&&!permissions.wholesale)pricingDenied('سعر الجملة غير مسموح لهذا المستخدم');
+  const quantities=new Map();
+  for(const row of body.lines){
+   const id=Number(row.item_id),unit=row.item_unit_id==null||row.item_unit_id===''?null:Number(row.item_unit_id),qty=Number(row.qty);
+   if(!Number.isSafeInteger(id)||(unit!==null&&(!Number.isSafeInteger(unit)||unit<1))||!Number.isFinite(qty)||qty<=0||qty>1000000)throw Error('الصنف أو الكمية غير صالح');
+   const {discount,override}=priceTerms(row);
+   if(discount>Math.round(permissions.discount_limit*100))pricingDenied('الخصم يتجاوز الحد المسموح لهذا المستخدم');
+   if(override!==null&&!permissions.override)pricingDenied('تغيير السعر غير مسموح لهذا المستخدم');
+   const scaleCode=normalizeBarcode(row.scale_code);
+   const label=scaleCode?scaleLabel(db,scaleCode):null;
+   if(scaleCode&&(!label||label.itemId!==id||unit!==null||qty!==label.qty||row.scale_mode!==label.mode))throw Error('ملصق الميزان لا يطابق الصنف أو الكمية. أعد المسح');
+   if(label?.mode==='price'&&(override!==null||discount))throw Error('سعر العبوة محدد بملصق الميزان');
+   const key=label?'scale:'+quantities.size:id+':'+(unit||0),prior=quantities.get(key);
+   if(prior&&(prior.discount!==discount||prior.override!==override))throw Error('وحّد السعر والخصم لبنود الوحدة نفسها');
+   const amount=(prior?.quantityMicro||0n)+scaledInteger(row.qty,6,'الكمية');
+   if(amount>1000000000000n)throw Error('الكمية أكبر من المسموح');
+   quantities.set(key,{id,unit,qty:Number(amount)/1000000,quantityMicro:amount,discount,override,priceLabel:label?.mode==='price',tracking:[...(prior?.tracking||[]),...trackingInput(row.tracking)]});
+  }
+  if(body.party_id&&!db.prepare("SELECT 1 FROM parties WHERE id=? AND kind IN ('customer','both')").get(body.party_id))throw Error('العميل غير موجود');
+  const lines=[];
+  for(const {id,unit,qty,tracking,discount,override,priceLabel} of [...quantities.values()].sort((a,b)=>a.id-b.id||(a.unit||0)-(b.unit||0))){
+   const item=db.prepare('SELECT * FROM items WHERE id=? AND active=1 AND activity=?').get(id,activity);
+   if(!item)throw Error('\u0635\u0646\u0641 \u063a\u064a\u0631 \u0645\u0648\u062c\u0648\u062f \u0623\u0648 \u0645\u0648\u0642\u0648\u0641 \u0623\u0648 \u0644\u0627 \u064a\u0646\u062a\u0645\u064a \u0625\u0644\u0649 \u0647\u0630\u0627 \u0627\u0644\u0646\u0634\u0627\u0629');
   const chosen=unit?db.prepare('SELECT * FROM item_units WHERE id=? AND item_id=? AND active=1').get(unit,id):null;
-  if(unit&&!chosen)throw Error('وحدة الصنف غير موجودة أو موقوفة');
+   if(unit&&!chosen)throw Error('\u0648\u062d\u062f\u0629 \u0627\u0644\u0635\u0646\u0641 \u063a\u064a\u0631 \u0645\u0648\u062c\u0648\u062f\u0629 \u0623\u0648 \u0645\u0648\u0642\u0648\u0641\u0629');
+   if(unit&&activity&&item.activity!==activity)throw Error('\u0648\u062d\u062f\u0629 \u0627\u0644\u0635\u0646\u0641 \u0644\u0627 \u062a\u0646\u062a\u0645\u064a \u0625\u0644\u0649 \u0647\u0630\u0627 \u0627\u0644\u0646\u0634\u0627\u0629');
   const product=chosen??item, listPrice=(level==='wholesale'&&!priceLabel?product.wholesale_price:null)??product.unit_price;
   lines.push({tracking,item_id:item.id,item_unit_id:unit,description:item.name_ar+(chosen?' — '+chosen.name:''),qty,
    unit_price:(override??listPrice)/100,discount_rate:discount/100,vat_rate:item.vat_rate,tax_category:item.tax_category,
    exemption_code:item.exemption_code,exemption_reason:item.exemption_reason});
  }
- return {pos_id:pos,party_id:body.party_id||null,payment:body.payment||'cash',supply_date:body.supply_date||null,lines};
+ return {pos_id:point.id,party_id:body.party_id||null,payment:body.payment||'cash',supply_date:body.supply_date||null,lines};
 }
 
 export function createPosSale(db,user,body) {

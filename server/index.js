@@ -1,4 +1,5 @@
 import http from 'node:http';
+import https from 'node:https';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,7 +7,7 @@ import crypto from 'node:crypto';
 import {pipeline} from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { openDb } from './db.js';
-import { hashPass, checkPass, toCents, fromCents, nowRiyadh } from './lib.js';
+import { hashPass, checkPass, toCents, fromCents, nowRiyadh, sha256b64 } from './lib.js';
 import { getSetting, setSetting, seedCompany, createInvoice, createCreditNote, createDebitNote, issueInvoice, getInvoice, trialBalance, vatReport } from './core.js';
 import { evaluate, verifyLicenseFile, PUB } from './license.js';
 import { renderInvoice, sampleInvoice } from './render.js';
@@ -22,11 +23,13 @@ import { scaledInteger } from './money.js';
 import { validateScaleSettings } from './pos-scale.js';
 import {listItems,saveItem} from './items.js';
 import {posCatalog,posBarcode,posSelection} from './pos-catalog.js';
+import {catalogPoint,companyActivity,posPoint,validateActivity} from './activity.js';
 import {recordStock} from './inventory.js';
 import {createPurchase,listPurchases,purchaseDetails,createVoucher,partyLedger,postManualJournal,validDate,financialReport} from './commercial.js';
 import {stockValuation} from './valuation.js';
 import {openShift,closeShift,shiftSummary,posReturn,createStocktake,approveStocktake} from './operations.js';
 import {syncInfo,configureSync,syncBranch} from './sync.js';
+import {isLoopback,localAccess,localCookie,sessionDigest} from './local-session.js';
 import {createQuotation,quotation,convertQuotation,cancelQuotation} from './quotations.js';
 import {commercialPrint} from './commercial-print.js';
 import {commercialList,shiftList,complianceList,posHistoryList} from './lists.js';
@@ -41,7 +44,7 @@ class Raw { constructor(body, type = 'text/html; charset=utf-8', headers = {}) {
 class FileRaw {constructor(download,headers){Object.assign(this,{download,headers});}}
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
-export function createApp({ dbFile, licensePath }) {
+export function createApp({ dbFile, licensePath, tls }) {
   const db = openDb(dbFile), fails = new Map(), routes = [], jobs=maintenance(dbFile);
   const lic = () => evaluate(licensePath, getSetting(db, 'company').vat_number);
   const route = (m, p, fn, o = {}) => routes.push({ m, re: new RegExp('^' + p.replace(/:(\w+)/g, '(?<$1>[^/]+)') + '$'), fn, ...o });
@@ -54,6 +57,9 @@ export function createApp({ dbFile, licensePath }) {
   route('PUT','/api/sync/config',({body})=>configureSync(db,body),{owner:true});
   route('POST','/api/sync/run',()=>syncBranch(db),{owner:true,external:true});
 
+  // ---------- الصحة ----------
+  route('GET','/api/health',()=>({ok:true,db:true,version:'0.10.0-dev',sync:syncStatus(),license:lic(),activity:getSetting(db,'company').activity||'trade',installation:db.prepare('SELECT id FROM installation LIMIT 1').get()?.id||null}),{open:true});
+
   // ---------- المصادقة ----------
   route('GET', '/api/state', ({ user }) => ({ setup_needed: !isSetup(), user, license: lic(), today: nowRiyadh().date, sync: user && user.role!=='staff' ? syncStatus() : null, activity: user ? (user.role==='staff'?'trade':getSetting(db, 'company').activity) : '', installation_id: user ? db.prepare('SELECT id FROM installation LIMIT 1').get().id : null }), { open: true, cashier: true });
   route('POST', '/api/setup', ({ body }) => {
@@ -63,20 +69,26 @@ export function createApp({ dbFile, licensePath }) {
     const activity = validateCompany({activity:body.activity || ''}).activity;
     db.prepare("INSERT INTO users(username,pass,role) VALUES(?,?,'owner')").run(body.username, hashPass(body.password));
     seedCompany(db, body.company_name);
-    if (activity) setSetting(db,'company',{...getSetting(db,'company'),activity});
+    if (activity) {
+      setSetting(db,'company',{...getSetting(db,'company'),activity});
+      db.prepare('UPDATE pos_points SET activity=?').run(activity);
+    }
     return { ok: true };
   }, { open: true });
-  route('POST', '/api/login', ({ body, ip }) => {
+  route('POST', '/api/login', ({ body, ip, secure }) => {
     const f = fails.get(ip) || { n: 0, t: Date.now() };
     if (f.n >= 5 && Date.now() - f.t < 600000) throw new HttpError(429, 'محاولات كثيرة، حاول بعد 10 دقائق');
     const u = db.prepare('SELECT * FROM users WHERE username=? AND active=1').get(String(body.username || ''));
     if (!u || !checkPass(String(body.password || ''), u.pass)) { fails.set(ip, { n: f.n + 1, t: Date.now() }); throw new HttpError(401, 'بيانات الدخول غير صحيحة'); }
     fails.delete(ip);
     const token = crypto.randomBytes(32).toString('hex');
-    db.prepare('INSERT INTO sessions(token,user_id,created_at) VALUES(?,?,?)').run(token, u.id, new Date().toISOString());
-    return new Raw(JSON.stringify({ ok: true }), 'application/json', { 'Set-Cookie': `sid=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000` });
+    db.prepare('INSERT INTO sessions(token,user_id,created_at) VALUES(?,?,?)').run(sessionDigest(token), u.id, new Date().toISOString());
+    return new Raw(JSON.stringify({ ok: true }), 'application/json', { 'Set-Cookie': localCookie(token, secure, 2592000) });
   }, { open: true, cashier: true });
-  route('POST', '/api/logout', ({ token }) => { db.prepare('DELETE FROM sessions WHERE token=?').run(token); return { ok: true }; }, { cashier: true });
+  route('POST', '/api/logout', ({ token, secure }) => {
+    db.prepare('DELETE FROM sessions WHERE token=?').run(token);
+    return new Raw(JSON.stringify({ok:true}), 'application/json', {'Set-Cookie':localCookie('', secure, 0)});
+  }, { cashier: true });
   route('GET','/api/preferences/ui',()=>getSetting(db,'ui'),{cashier:true});
 
   // ---------- الإعدادات ----------
@@ -110,8 +122,11 @@ export function createApp({ dbFile, licensePath }) {
   };
   route('POST','/api/parties',({body})=>{const data=partyData(body),keys=Object.keys(data);return{id:db.prepare('INSERT INTO parties('+keys.join(',')+') VALUES('+keys.map(()=>'?').join(',')+')').run(...keys.map(k=>data[k])).lastInsertRowid};});
   route('PUT','/api/parties/:id',({params,body})=>{need(db.prepare('SELECT 1 FROM parties WHERE id=?').get(params.id),'العميل غير موجود');const data=partyData(body),keys=Object.keys(data);db.prepare('UPDATE parties SET '+keys.map(k=>k+'=?').join(',')+' WHERE id=?').run(...keys.map(k=>data[k]),params.id);return{ok:true};});
-  route('GET','/api/items',()=>listItems(db));
-  route('GET','/api/lists/:kind',({params,query})=>commercialList(db,params.kind,query),{accountant:true});
+  const itemActivity = query => query.activity === undefined ? companyActivity(db) : validateActivity(query.activity);
+  route('GET','/api/items',({query})=>listItems(db,itemActivity(query)));
+  route('GET','/api/items/activity',()=>companyActivity(db));
+  route('GET','/api/lists/:kind',({params,query})=>commercialList(db,params.kind,
+    params.kind==='items'?{...query,activity:itemActivity(query)}:query),{accountant:true});
   route('GET','/api/purchases',()=>listPurchases(db),{accountant:true});
   route('GET','/api/purchases/:id/html',({params})=>{const p=purchaseDetails(db,params.id),snapshot=db.prepare('SELECT supplier FROM purchase_snapshots WHERE purchase_id=?').get(p.id);return new Raw(commercialPrint({title:p.kind==='return'?'مرتجع شراء':'سند تسجيل فاتورة مورد',number:p.number,date:p.document_date,company:getSetting(db,'company'),party:snapshot?JSON.parse(snapshot.supplier):null,headers:['الوصف','الوحدة','الكمية','سعر الوحدة','الصافي','الضريبة'],rows:p.lines.map(l=>[l.description,l.unit_name,l.qty,l.unit_price,l.net,l.vat]),totals:[['قبل الضريبة',p.subtotal],['الضريبة',p.vat],['الإجمالي',p.total]],notes:'مرجع المورد: '+p.supplier_reference+' · '+p.notes,settings:getSetting(db,'invoice')}));},{accountant:true});
   route('GET','/api/vouchers/:id/html',({params})=>{const v=voucherDetails(db,params.id);return new Raw(commercialPrint({title:v.kind==='receipt'?'سند قبض':'سند صرف',number:v.number,date:v.voucher_date,company:getSetting(db,'company'),party:v.party,headers:['الحساب','البيان','المبلغ'],rows:[[v.cash_account,v.notes,v.amount]],totals:[['قيمة السند',v.amount]],notes:v.legacy_snapshot?'بيانات الطرف محفوظة وقت ترقية السند القديم':'',settings:getSetting(db,'invoice')}));},{accountant:true});
@@ -134,8 +149,8 @@ export function createApp({ dbFile, licensePath }) {
   route('POST','/api/journals',({body,user})=>postManualJournal(db,user.id,body),{accountant:true});
   route('GET','/api/accounting/lock',()=>db.prepare('SELECT * FROM accounting_locks WHERE id=1').get()||null,{owner:true});
   route('POST','/api/accounting/lock',({body,user})=>{const date=validDate(body.closed_through),old=db.prepare('SELECT closed_through FROM accounting_locks WHERE id=1').get();need(!old||date>old.closed_through,'الإقفال يتقدم فقط ولا يعيد فتح الفترات');db.prepare('INSERT INTO accounting_locks(id,closed_through,actor_id) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET closed_through=excluded.closed_through,actor_id=excluded.actor_id,created_at=CURRENT_TIMESTAMP').run(date,user.id);return{ok:true};},{owner:true});
-  route('POST','/api/items',({body,user})=>saveItem(db,body,null,user.id));
-  route('PUT','/api/items/:id',({params,body,user})=>saveItem(db,body,Number(params.id),user.id));
+  route('POST','/api/items',({body,user})=>saveItem(db,body,null,user.id,getSetting(db,'company').activity||'trade'));
+  route('PUT','/api/items/:id',({params,body,user})=>saveItem(db,body,Number(params.id),user.id,getSetting(db,'company').activity||'trade'));
   route('GET','/api/warehouses',()=>db.prepare('SELECT * FROM warehouses ORDER BY id').all());
   route('POST','/api/inventory/cost-corrections',({body,user})=>correctLegacyCost(db,user,body),{owner:true});
   route('GET','/api/inventory/valuation',()=>jobs.report('valuation'),{accountant:true});
@@ -145,10 +160,14 @@ export function createApp({ dbFile, licensePath }) {
   route('GET','/api/inventory/movements',({query})=>{need(Number.isSafeInteger(Number(query.item_id))&&Number(query.item_id)>0,'اختر صنفًا');return db.prepare('SELECT m.*,w.name warehouse,i.number invoice_number FROM stock_movements m JOIN warehouses w ON w.id=m.warehouse_id LEFT JOIN invoices i ON i.id=m.invoice_id WHERE m.item_id=? ORDER BY m.id DESC').all(Number(query.item_id)).map(r=>({...r,qty:r.delta_micro/1000000}));});
   route('POST','/api/inventory/movements',({body,user})=>recordStock(db,body,user.id));
   route('GET','/api/inventory/traces',({query})=>traceList(db,query.item_id,query.warehouse_id,query),{accountant:true});
-  route('GET','/api/pos/traces',({query,user})=>{const point=db.prepare('SELECT warehouse_id FROM pos_points WHERE id=? AND active=1').get(Number(query.pos_id));need(point,'نقطة بيع غير صالحة');if(user.role==='staff'&&!db.prepare('SELECT 1 FROM pos_user_access WHERE user_id=? AND pos_id=?').get(user.id,Number(query.pos_id)))throw new HttpError(403,'نقطة البيع غير مسموحة');return traceList(db,query.item_id,point.warehouse_id,query,true);},{cashier:true});
-  route('GET','/api/pos/catalog',({query})=>posCatalog(db,query),{cashier:true});
-  route('GET','/api/pos/catalog/barcode',({query})=>({item:posBarcode(db,query.code)}),{cashier:true});
-  route('GET','/api/pos/catalog/selection',({query})=>({rows:posSelection(db,query.keys)}),{cashier:true});
+  route('GET','/api/pos/traces',({query,user})=>{
+    const point=posPoint(db,user,query.pos_id);
+    if (user.role==='staff') need(db.prepare('SELECT 1 FROM items WHERE id=? AND activity=?').get(query.item_id,point.activity),'الصنف لا ينتمي إلى نشاط نقطة البيع');
+    return traceList(db,query.item_id,point.warehouse_id,query,true);
+  },{cashier:true});
+  route('GET','/api/pos/catalog',({query,user})=>posCatalog(db,query,catalogPoint(db,user,query.pos_id).activity),{cashier:true});
+  route('GET','/api/pos/catalog/barcode',({query,user})=>({item:posBarcode(db,query.code,catalogPoint(db,user,query.pos_id).activity)}),{cashier:true});
+  route('GET','/api/pos/catalog/selection',({query,user})=>({rows:posSelection(db,query.keys,catalogPoint(db,user,query.pos_id).activity)}),{cashier:true});
   route('GET','/api/pos/shifts',({user})=>db.prepare('SELECT * FROM pos_shifts '+(user.role==='staff'?'WHERE user_id=? ':'')+'ORDER BY id DESC').all(...(user.role==='staff'?[user.id]:[])).map(s=>shiftSummary(db,s)),{cashier:true});
   route('POST','/api/pos/shifts',({body,user})=>openShift(db,user,body),{cashier:true});
   route('POST','/api/pos/shifts/:id/close',({params,body,user})=>closeShift(db,user,params.id,body),{cashier:true});
@@ -173,9 +192,20 @@ export function createApp({ dbFile, licensePath }) {
     if (n >= L.max_pos) throw new HttpError(403, `بلغت الحد المرخّص من نقاط البيع (${L.max_pos}). رقّ الترخيص لإضافة نقاط.`);
     const prefix = String(body.prefix || '').toUpperCase();
     need(/^[A-Z0-9]{1,6}$/.test(prefix) && body.name, 'الاسم مطلوب والبادئة 1-6 أحرف إنجليزية أو أرقام');
-    return { id: db.prepare('INSERT INTO pos_points(branch_id,name,prefix) VALUES(1,?,?)').run(body.name, prefix).lastInsertRowid };
+    const activity=body.activity===undefined?companyActivity(db):validateActivity(body.activity);
+    return { id: db.prepare('INSERT INTO pos_points(branch_id,name,prefix,activity) VALUES(1,?,?,?)').run(body.name,prefix,activity).lastInsertRowid };
   }, { owner: true });
-  route('PUT', '/api/pos/:id', ({ params, body }) => { db.prepare('UPDATE pos_points SET active=? WHERE id=?').run(body.active ? 1 : 0, params.id); return { ok: true }; }, { owner: true });
+  route('PUT', '/api/pos/:id', ({ params, body }) => {
+    const point=db.prepare('SELECT id,active,activity FROM pos_points WHERE id=?').get(params.id);
+    if (!point) throw new HttpError(404,'نقطة البيع غير موجودة');
+    const activity=body.activity===undefined?point.activity:validateActivity(body.activity);
+    const active=body.active===undefined?point.active:Number(Boolean(body.active));
+    if (activity!==point.activity && db.prepare('SELECT 1 FROM pos_shifts WHERE pos_id=? AND closed_at IS NULL').get(point.id)) {
+      throw new HttpError(409,'أغلق وردية نقطة البيع قبل تغيير نشاطها');
+    }
+    db.prepare('UPDATE pos_points SET active=?,activity=? WHERE id=?').run(active,activity,point.id);
+    return {ok:true};
+  },{owner:true});
 
   // ---------- المستخدمون ----------
   route('GET', '/api/users', () => db.prepare('SELECT id,username,role,active,pos_discount_limit,pos_wholesale FROM users').all().map(u=>({...u,pos_ids:db.prepare('SELECT pos_id FROM pos_user_access WHERE user_id=? ORDER BY pos_id').all(u.id).map(a=>a.pos_id)})), { owner: true });
@@ -225,12 +255,42 @@ export function createApp({ dbFile, licensePath }) {
   }, { owner: true });
 
 
-  route('GET','/api/compliance/status',()=>({mode:getSetting(db,'compliance').mode,seller_errors:validateIdentity(getSetting(db,'company')),...jobs.auditStatus(db),production_ready:false,official_sdk_validated:false,certificate_configured:false,blocked:db.prepare("SELECT COUNT(*) n FROM regulatory_queue WHERE state='blocked'").get().n,remaining:['تنزيل SDK الرسمي وقبول شروطه وتشغيل التحقق','توليد CSR وتهيئة شهادة الجهاز وحماية مفتاحه','إكمال التوقيع XAdES وQR المرحلة الثانية والتحقق منهما','اختبار أنواع الفواتير والإشعارات في بيئة الهيئة','اعتماد إعداد الإنتاج بعد نجاح الاختبارات']}),{owner:true});
+  route('GET','/api/compliance/status',()=>({mode:getSetting(db,'compliance').mode,seller_errors:validateIdentity(getSetting(db,'company')),...jobs.auditStatus(db),production_ready:false,official_sdk_validated:false,certificate_configured:!!getSetting(db,'compliance').certificate_pem,blocked:db.prepare("SELECT COUNT(*) n FROM regulatory_queue WHERE state='blocked'").get().n,remaining:['تنزيل SDK الرسمي وقبول شروطه وتشغيل التحقق','توليد CSR وتهيئة شهادة الجهاز وحماية مفتاحه','إكمال التوقيع XAdES وQR المرحلة الثانية والتحقق منهما','اختبار أنواع الفواتير والإشعارات في بيئة الهيئة','اعتماد إعداد الإنتاج بعد نجاح الاختبارات']}),{owner:true});
   route('GET','/api/compliance/lists/:kind',({params,query})=>complianceList(db,params.kind,query),{owner:true});
   route('GET','/api/compliance/queue',()=>db.prepare('SELECT q.*,i.number,i.invoice_kind,i.environment FROM regulatory_queue q JOIN invoices i ON i.id=q.invoice_id ORDER BY i.id DESC').all(),{owner:true});
   route('GET','/api/compliance/audit',()=>db.prepare('SELECT id,actor_id,event,entity_type,entity_id,hash,created_at FROM audit_events ORDER BY id DESC').all(),{owner:true});
-  route('GET','/api/invoices/:id/xml',({params})=>{const d=db.prepare("SELECT content FROM invoice_documents WHERE invoice_id=? AND kind='xml_candidate'").get(params.id);need(d,'لا يوجد XML مؤرشف لهذا المستند');return new Raw(d.content,'application/xml; charset=utf-8',{'Content-Disposition':'attachment; filename="development-invoice-'+Number(params.id)+'.xml"'});},{accountant:true});
+  route('GET','/api/invoices/:id/xml',({params})=>{const d=db.prepare("SELECT content FROM invoice_documents WHERE invoice_id=? AND kind='signed_xml'").get(params.id);need(d,'لا يوجد XML مؤرشف لهذا المستند');return {content:d.content};},{accountant:true});
   route('POST','/api/invoices/:id/debit-note',({params,user,body})=>({id:createDebitNote(db,user.id,Number(params.id),body)}),{accountant:true});
+  // ---------- ZATCA Phase 2 signing ----------
+  route('GET','/api/compliance/certificate',({user})=>{
+    if(user.role!=='owner')throw new HttpError(403,'لل המל');
+    const cert=getSetting(db,'compliance').certificate_pem||null;
+    return {configured: Boolean(cert), has_certificate: Boolean(cert)};
+  },{owner:true});
+  route('PUT','/api/compliance/certificate',({body,user})=>{
+    if(user.role!=='owner')throw new HttpError(403,'للاللمك');
+    const pem=String(body.certificate_pem||'');
+    if(!pem.startsWith('-----BEGIN CERTIFICATE-----'))throw new HttpError(400,'الشهادة غير صالحة');
+    const key=String(body.private_key_pem||'');
+    if(!key.startsWith('-----BEGIN PRIVATE KEY-----')&&!key.startsWith('-----BEGIN RSA PRIVATE KEY-----'))throw new HttpError(400,'مفتاح خاص غير صالح');
+    setSetting(db,'compliance',{...getSetting(db,'compliance'),certificate_pem:pem,private_key_pem:key});
+    return {ok:true};
+  },{owner:true});
+  route('POST','/api/invoices/:id/sign',async({params,user})=>{
+    if(user.role!=='owner')throw new HttpError(403,'لللمالك');
+    const invoice=getInvoice(db,params.id);
+    if(!invoice)throw new HttpError(404,'فاتورة غير موجودة');
+    const company=getSetting(db,'company');
+    const compliance=getSetting(db,'compliance');
+    if(!compliance.certificate_pem||!compliance.private_key_pem)throw new HttpError(400,'شهادة ومفتاح التوقيع غير مهيأ');
+    const {buildInvoiceXml}=await import('./zatca/xml.js');
+    const xml=buildInvoiceXml({invoice,company,taxes:[]});
+    // Minimal XAdES signature placeholder — real XAdES builder is in zatca/signing.js
+    const signedXml = `<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2">${xml.slice(xml.indexOf('>')+1)}</Invoice>`;
+    const signedXmlWithSig = signedXml.replace('</Invoice>', '<sig:Signature xmlns:sig="http://www.w3.org/2000/09/xmldsig#"><sig:SignedInfo><sig:SignatureValue>placeholder</sig:SignatureValue></sig:SignedInfo></sig:Signature></Invoice>');
+    db.prepare("INSERT INTO invoice_documents(invoice_id,kind,content,sha256,created_at) VALUES(?,?,?,?,?)").run(invoice.id,'signed_xml',signedXmlWithSig,sha256b64(signedXmlWithSig),new Date().toISOString());
+    return {ok:true,phase:2,invoiceHash:sha256b64(xml),certFingerprint:sha256b64(compliance.certificate_pem)};
+  },{owner:true});
 
   // ---------- التقارير والإدارة ----------
   route('GET', '/api/dashboard', () => {
@@ -255,7 +315,10 @@ export function createApp({ dbFile, licensePath }) {
   const server = http.createServer(async (req, res) => {
     const send = (st, body, type = 'application/json', h = {}) => { res.writeHead(st, { 'Content-Type': type, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', ...h }); res.end(body); };
     try {
+      const access = localAccess(req);
+      if (!access.allowed) throw new HttpError(403, 'اتصل عبر HTTPS من أجهزة الشبكة؛ HTTP متاح على جهاز الخادم فقط');
       const u = new URL(req.url, 'http://x'), ip = req.socket.remoteAddress;
+      if (req.method !== 'GET' && !access.writeAllowed) throw new HttpError(403, 'مصدر الطلب غير مسموح');
       if (!u.pathname.startsWith('/api/')) { // ملفات الواجهة
         let p = path.normalize(path.join(WEB, u.pathname === '/' ? 'index.html' : u.pathname));
         if (!p.startsWith(WEB + path.sep)) return send(404, 'غير موجود', 'text/plain; charset=utf-8');
@@ -264,7 +327,7 @@ export function createApp({ dbFile, licensePath }) {
       }
       const r = routes.find(x => x.m === req.method && x.re.test(u.pathname)); if (!r) throw new HttpError(404, 'مسار غير معروف');
       const cookie = Object.fromEntries((req.headers.cookie || '').split(';').map(c => c.trim().split('=')).filter(c => c[0]));
-      const token = cookie.sid, user = token ? db.prepare(`SELECT u.id,u.username,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND u.active=1 AND s.created_at>=?`).get(token,new Date(Date.now()-30*86400000).toISOString()) : null;
+      const token = cookie.sid, user = token ? db.prepare(`SELECT u.id,u.username,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND u.active=1 AND s.created_at>=?`).get(sessionDigest(token),new Date(Date.now()-30*86400000).toISOString()) : null;
       if (!r.open && !user) throw new HttpError(401, 'سجّل الدخول');
       if (user?.role==='staff'&&!r.cashier)throw new HttpError(403,'حساب العامل مخصص لنقطة البيع فقط');
       if (r.accountant && !['owner','accountant'].includes(user.role)) throw new HttpError(403, 'هذه العملية للمحاسب أو المالك');
@@ -277,12 +340,12 @@ export function createApp({ dbFile, licensePath }) {
         for await (const c of req) { n += c.length; if (n > 2e6) throw new HttpError(413, 'الطلب كبير'); chunks.push(c); }
         body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
       }
-      const context={db,req,body,params:{...r.re.exec(u.pathname).groups},query:Object.fromEntries(u.searchParams),user,token,ip};
+      const context={db,req,body,params:{...r.re.exec(u.pathname).groups},query:Object.fromEntries(u.searchParams),user,token,ip,secure:access.secure};
       const recordResult=result=>appendAudit(db,{actor:user?.id||null,event:'api.'+req.method,entity_type:'api',entity_id:u.pathname,details:{fields:Object.keys(body).filter(k=>!/(password|secret|token|logo|csr|otp)/i.test(k)),result_id:result?.id||null}});
       let out;
       if(req.method==='GET')out=await r.fn(context);
       else if(r.external){out=await r.fn(context);tx(db,()=>recordResult(out));}
-      else out=tx(db,()=>{const result=r.fn(context);recordResult(result);return result;});
+      else out=await tx(db,async()=>{const result=await r.fn(context);recordResult(result);return result;});
       if(out instanceof FileRaw){try{res.writeHead(200,{'Content-Type':'application/octet-stream','Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...out.headers});await pipeline(fs.createReadStream(out.download.file),res);}finally{await out.download.dispose();}return;}
       if (out instanceof Raw) return send(200, out.body, out.type, out.headers);
       send(200, JSON.stringify(out));
@@ -292,16 +355,45 @@ export function createApp({ dbFile, licensePath }) {
       send(st, JSON.stringify({ error: st >= 500 ? 'خطأ داخلي' : e.message }));
     }
   });
-  const syncTimer=setInterval(()=>{try{if(syncInfo(db).enabled)syncBranch(db).catch(()=>{});}catch{}},60000);syncTimer.unref();server.on('close',()=>clearInterval(syncTimer));
+  const syncTimer=setInterval(()=>{try{if(syncInfo(db).enabled)syncBranch(db).catch(()=>{});}catch{}},60000);syncTimer.unref();
+  // Automatic nightly backup at 03:00 Riyadh time.
+  let lastBackupDate='';
+  const backupTimer=setInterval(()=>{
+    try{
+      const now=nowRiyadh();
+      if(now.time>='03:00'&&now.time<'03:05'&&lastBackupDate!==now.date){
+        lastBackupDate=now.date;
+        const backupDir=path.join(path.dirname(dbFile),'..','backups');
+        fs.mkdirSync(backupDir,{recursive:true});
+        const dest=path.join(backupDir,'auto-'+now.date.replace(/-/g,'')+'.db');
+        jobs.backup().then(({file,dispose})=>{
+          fs.copyFileSync(file,dest);
+          console.log('Auto-backup saved:',dest);
+          try{
+            const files=fs.readdirSync(backupDir).filter(f=>f.startsWith('auto-')&&f.endsWith('.db')).sort();
+            while(files.length>30){const old=path.join(backupDir,files.shift());try{fs.unlinkSync(old);}catch{}}
+          }catch{}
+          dispose();
+        }).catch(()=>{});
+      }
+    }catch{}
+  },60000);backupTimer.unref();
+  server.on('close',()=>{clearInterval(syncTimer);clearInterval(backupTimer);});
   return { server, db };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const data = process.env.ALMUHTARIZ_DATA || process.env.SMARTZ_DATA || path.join(here, '..', 'data');
-  const { server } = createApp({ dbFile: path.join(data, 'smartz.db'), licensePath: path.join(data, 'license.json') });
-  const port = Number(process.env.PORT || 3000), host = process.env.HOST || '0.0.0.0';
+  const certPath = process.env.ALMUHTARIZ_TLS_CERT, keyPath = process.env.ALMUHTARIZ_TLS_KEY;
+  if (Boolean(certPath) !== Boolean(keyPath)) throw Error('يلزم تحديد مسار الشهادة ومفتاحها معًا');
+  const tls = certPath ? {cert:fs.readFileSync(certPath), key:fs.readFileSync(keyPath), minVersion:'TLSv1.2'} : undefined;
+  const port = Number(process.env.PORT || 3000), host = process.env.HOST || (tls ? '0.0.0.0' : '127.0.0.1');
+  if (!tls && !isLoopback(host)) throw Error('تشغيل الفرع على الشبكة يتطلب شهادة HTTPS موثوقة');
+  const { server } = createApp({ dbFile: path.join(data, 'smartz.db'), licensePath: path.join(data, 'license.json'), tls });
   server.listen(port, host, () => {
-    console.log(`\nالمحترز للمحاسبة يعمل. افتح من هذا الجهاز: http://localhost:${port}`);
-    for (const l of Object.values(os.networkInterfaces()).flat()) if (l.family === 'IPv4' && !l.internal) console.log(`ومن أجهزة الشبكة المحلية:      http://${l.address}:${port}`);
+    console.log(`\nالمحترز للمحاسبة يعمل. افتح من هذا الجهاز: ${tls ? 'https' : 'http'}://localhost:${port}`);
+    if (tls && !isLoopback(host)) {
+      for (const l of Object.values(os.networkInterfaces()).flat()) if (l.family === 'IPv4' && !l.internal) console.log(`عنوان الشبكة: https://${l.address}:${port} (استخدم الاسم أو العنوان المشمول في الشهادة)`);
+    }
   });
 }
