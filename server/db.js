@@ -18,6 +18,17 @@ export function openDb(file) {
 export function tx(db, fn) {
   const savepoint = 'sp_' + Math.random().toString(36).slice(2);
   db.exec('SAVEPOINT ' + savepoint);
-  try { const r = fn(); db.exec('RELEASE ' + savepoint); return r; }
-  catch (e) { try { db.exec('ROLLBACK TO ' + savepoint); db.exec('RELEASE ' + savepoint); } catch {} throw e; }
+  try {
+    const r = fn();
+    if (r && typeof r.then === 'function') {
+      return r.then(
+        result => { db.exec('RELEASE ' + savepoint); return result; },
+        e => { try { db.exec('ROLLBACK TO ' + savepoint); db.exec('RELEASE ' + savepoint); } catch {} throw e; }
+      );
+    }
+    db.exec('RELEASE ' + savepoint);
+    return r;
+  } catch (e) {
+    try { db.exec('ROLLBACK TO ' + savepoint); db.exec('RELEASE ' + savepoint); } catch {} throw e;
+  }
 }

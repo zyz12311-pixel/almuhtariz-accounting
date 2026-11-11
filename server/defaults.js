@@ -1,7 +1,7 @@
 // الإعدادات الافتراضية. كل شيء هنا قابل للتعديل من شاشة الإعدادات.
 export const DEFAULTS = {
   company: { name_ar: '', name_en: '', vat_number: '', cr_number: '', address: '', phone: '', email: '', logo: '', activity: '', street: '', building_number: '', district: '', city: '', postal_code: '', country_code: 'SA', seller_id_scheme: 'CRN', seller_id: '' },
-  compliance: { mode:'development' },
+  compliance: { mode:'development', certificate_pem:'', private_key_pem:'' },
   pos_control: {require_shift:false},
   pos_scale: {mode:'off',prefix:'20'},
   ui: { theme: 'auto', accent: '#0f766e', fontScale: 1, density: 'comfortable', sidebar: 'right', radius: 10,
