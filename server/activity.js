@@ -3,13 +3,13 @@ import {getSetting} from './core.js';
 const activities = new Set(['trade','events','engineering']);
 
 export function validateActivity(value) {
-  if (!activities.has(value)) throw Error('النشاط غير صالح');
+  if (!activities.has(value) || value !== 'trade') throw Error('النشاط غير صالح');
   return value;
 }
 
 export function companyActivity(db) {
   const value = getSetting(db,'company').activity;
-  return activities.has(value) ? value : 'trade';
+  return 'trade';
 }
 
 export function posPoint(db, user, value) {
@@ -17,7 +17,7 @@ export function posPoint(db, user, value) {
   if (!Number.isSafeInteger(id) || id < 1) throw Error('اختر نقطة بيع');
   const hasActivity = db.prepare("SELECT COUNT(*) n FROM pragma_table_info('pos_points') WHERE name='activity'").get().n > 0;
   const point = db.prepare('SELECT * FROM pos_points WHERE id=? AND active=1').get(id);
-  if (!point) throw Error('نقطة البيع غير مفعلة');
+  if (!point || (hasActivity && point.activity !== 'trade')) throw Error('نقطة البيع غير مفعلة');
   if (user.role === 'staff' && !db.prepare('SELECT 1 FROM pos_user_access WHERE user_id=? AND pos_id=?').get(user.id,id)) {
     throw Object.assign(Error('نقطة البيع غير مسموحة لهذا العامل'),{status:403});
   }
@@ -28,7 +28,7 @@ export function catalogPoint(db, user, value) {
   if (value !== undefined) return posPoint(db,user,value);
   const assigned = user.role === 'staff';
   const points = db.prepare(
-    'SELECT p.* FROM pos_points p WHERE p.active=1 '+
+    "SELECT p.* FROM pos_points p WHERE p.active=1 AND p.activity='trade' "+
     (assigned ? 'AND EXISTS(SELECT 1 FROM pos_user_access a WHERE a.pos_id=p.id AND a.user_id=?) ' : '')+
     'ORDER BY p.id LIMIT 2'
   ).all(...(assigned ? [user.id] : []));
