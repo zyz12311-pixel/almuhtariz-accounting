@@ -1,0 +1,20 @@
+name: Pre-certification QA
+on:
+  push:
+    branches: [qa-pre-certification]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --version
+      - run: npm test
