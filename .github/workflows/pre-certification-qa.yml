@@ -18,3 +18,7 @@ jobs:
           node-version: '22'
       - run: node --version
       - run: npm test
+
+      - name: Transaction isolation regression
+        if: always()
+        run: node --no-warnings tests/transaction-overlap.js
