@@ -1,61 +1,18 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import crypto from 'node:crypto';
-import { createApp } from '../server/index.js';
-import { syncInfo, configureSync, syncBranch } from '../server/sync.js';
-
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'almuhtariz-sync-'));
-const file = path.join(dir, 'sync.db');
-const { server, db } = createApp({ dbFile: file, licensePath: path.join(dir, 'license.json') });
-
-await new Promise(r => server.listen(0, '127.0.0.1', r));
-const base = `http://127.0.0.1:${server.address().port}`;
-let n = 0; const ok = (name) => console.log(`  ✓ ${++n}. ${name}`);
-
-// إعداد ارتباط مزامنة مزيف (token غير صحيح أو خدمة غير متاحة)
-db.prepare(`INSERT INTO sync_connection(id,device_token,enabled) VALUES(1, ?, 1)`).run('fake-token.' + crypto.randomUUID());
-
-// الحالة 1: رفض تأكيد الاستلام (الخدمة لا تُرجع accepted=true)
-{
-  const info = syncInfo(db);
-  assert.equal(info.configured, true);
-  assert.equal(info.enabled, true);
-  // syncBranch سيحاول الإرسال للendpoint وهو غير متاح -> يجب أن يفشل بشكل أنيق
-  try {
-    await syncBranch(db);
-    // إذا وصلنا هنا، افترض أن الاختبار يمر إذا لم تُلقِ استثناءً غير معالج
-    ok('فشل المزامنة لا يُسبب انهيارًا ( servicio غير متاح)');
-  } catch (e) {
-    ok('فشل المزامنة يُلقِ استثناءً يمكن التقاطه');
-  }
-}
-
-// الحالة 2: تعطل الخدمة (انتهاء مهلة الاتصال) - البيانات تبقى على الفرع
-{
-  try { await syncBranch(db); } catch {}
-  const info = syncInfo(db);
-  assert.notEqual(info.last_error, null, 'يتم تسجيل خطأ المزامنة');
-  assert.notEqual(info.last_error, '', 'رسالة خطأ غير فارغة');
-  ok('تسجيل خطأ تعطل الخدمة');
-}
-
-// الحالة 3: انتهاء مهلة الاتصال (timeout) - لا تُفقد البيانات
-{
-  const countBefore = db.prepare('SELECT COUNT(*) n FROM sync_outbox').get().n;
-  try { await syncBranch(db); } catch {}
-  const countAfter = db.prepare('SELECT COUNT(*) n FROM sync_outbox').get().n;
-  assert.equal(countBefore, countAfter, 'البيانات تبقى في 큐 المزامنة عند الفشل');
-  ok('البيانات تبقى عند انتهاء المهلة');
-}
-
-// الحالة 4: قراءة حالة الارتباط (محاكاة)
-{
-  const info = syncInfo(db);
-  assert.equal(info.configured, true);
-  ok('حالة الارتباط يمكن قراءتها');
-}
-
-server.close(); db.close();
-console.log(`\nنجحت ${n} اختبارًا لفشل المزامنة واستعادتها`);
+import {openDb} from '../server/db.js';
+import {seedCompany} from '../server/core.js';
+import {configureSync,syncBranch,syncInfo} from '../server/sync.js';
+const db=openDb(':memory:');const original=globalThis.fetch;
+try {
+ seedCompany(db,'QA');
+ configureSync(db,{device_token:syncInfo(db).installation_id+'.'+'x'.repeat(43),enabled:true});
+ globalThis.fetch=async()=>Response.json({accepted:true,sequence:-1});
+ await assert.rejects(syncBranch(db));assert.equal(syncInfo(db).last_sequence,0);assert.ok(syncInfo(db).last_error);
+ globalThis.fetch=async()=>Response.json({accepted:false},{status:503});
+ await assert.rejects(syncBranch(db));assert.equal(syncInfo(db).last_sequence,0);
+ globalThis.fetch=async()=>{throw new DOMException('timeout','TimeoutError');};
+ await assert.rejects(syncBranch(db));assert.match(syncInfo(db).last_error,/مهلة/);
+ globalThis.fetch=async(_url,options)=>Response.json({accepted:true,sequence:JSON.parse(options.body).sequence});
+ const result=await syncBranch(db);assert.ok(result.last_sequence>0);assert.equal(result.last_error,null);assert.ok(result.last_synced_at);
+ console.log('PASS: sync acknowledgment failure, service outage, timeout and recovery');
+} finally {globalThis.fetch=original;db.close();}
