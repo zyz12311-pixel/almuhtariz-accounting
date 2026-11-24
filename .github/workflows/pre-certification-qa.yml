@@ -1,0 +1,28 @@
+name: Pre-certification QA
+on:
+  push:
+    branches: [qa-pre-certification]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --version
+      - run: npm test
+
+      - name: Transaction isolation regression
+        if: always()
+        run: node --no-warnings tests/transaction-overlap.js
+
+      - name: Sync failure regression
+        if: always()
+        run: node --no-warnings tests/sync-failure.js
