@@ -22,3 +22,7 @@ jobs:
       - name: Transaction isolation regression
         if: always()
         run: node --no-warnings tests/transaction-overlap.js
+
+      - name: Sync failure regression
+        if: always()
+        run: node --no-warnings tests/sync-failure.js
