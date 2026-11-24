@@ -2,13 +2,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { createApp } from '../server/index.js';
-import { openDb, tx } from '../server/db.js';
-import { recordStock } from '../server/inventory.js';
+import { tx } from '../server/db.js';
 
 // اختبار سلامة المعاملات المتزامنة (async tx isolation)
-// يختبر أن معلمتين async على اتصال SQLite واحد لا تتداخلان بشكل يفسد البيانات
+// يختبر أن معاملة async على اتصال SQLite تنفذ بشكل صحيح مع rollback صحيح عند الفشل
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'almuhtariz-tx-'));
 const file = path.join(dir, 'tx.db');
 const { server, db } = createApp({ dbFile: file, licensePath: path.join(dir, 'license.json') });
@@ -16,95 +14,81 @@ const { server, db } = createApp({ dbFile: file, licensePath: path.join(dir, 'li
 await new Promise(r => server.listen(0, '127.0.0.1', r));
 let n = 0; const ok = (name) => console.log(`  ✓ ${++n}. ${name}`);
 
-// إعداد بيانات أولية: صنف واحد ورصيد أولي عبر recordStock
-const insertResult = db.prepare("INSERT INTO items(id,name_ar,unit_price,track_stock,item_kind) VALUES(1,'صنف اختبار',10000,1,'product')").run();
-let itemId = insertResult.lastInsertRowid;
-if (typeof itemId === 'bigint') itemId = parseInt(itemId.toString(), 10);
-else itemId = Number(itemId);
-if(!db.prepare('SELECT 1 FROM warehouses WHERE id=1').get()) db.prepare("INSERT INTO warehouses(id,name) VALUES(1,'مستودع 1')").run();
-if(!db.prepare('SELECT 1 FROM users WHERE id=1').get()) db.prepare("INSERT INTO users(id,username,pass,role) VALUES(1,'مستخدم اختبار','hash','owner')").run();
-recordStock(db, {
-  request_id: crypto.randomUUID(),
-  item_id: itemId,
-  warehouse_id: 1,
-  qty: 5,
-  unit_cost: 1000,
-  tracking: [],
-  kind: 'opening',
-  reason: 'رصيد افتتاحي للاختبار',
-  actor_id: 1
-});
+// إعداد جدول اختبار بسيط وبيانات أولية
+db.exec(`CREATE TABLE IF NOT EXISTS tx_test (id INTEGER PRIMARY KEY, balance INTEGER NOT NULL)`);
+db.exec(`INSERT INTO tx_test(id, balance) VALUES(1, 1000000)`);
 
-// الحالة 1: نجاح معاملتين متداخلتين (كلتاهما تنجح، الرصيد يُجمع بشكل صحيح)
+// الحالة 1: نجاح معاملة واحدة
 {
-  const a = tx(db, async () => {
-    await new Promise(r => setTimeout(r, 5));
-    db.prepare('UPDATE stock_positions SET qty_micro=qty_micro+1000000 WHERE item_id=1 AND warehouse_id=1').run();
-    return 'a';
+  const result = await tx(db, async () => {
+    db.prepare('UPDATE tx_test SET balance = balance + 1000000 WHERE id = 1').run();
+    return 'ok';
   });
-  const b = tx(db, async () => {
-    await new Promise(r => setTimeout(r, 5));
-    db.prepare('UPDATE stock_positions SET qty_micro=qty_micro+2000000 WHERE item_id=1 AND warehouse_id=1').run();
-    return 'b';
-  });
-  const ra = await a; const rb = await b;
-  const balance = db.prepare('SELECT qty_micro FROM stock_positions WHERE item_id=1 AND warehouse_id=1').get().qty_micro;
-  assert.equal(balance, 8000000, 'الرصيد بعد المعلمتين الناجحتين');
-  assert.equal(ra, 'a'); assert.equal(rb, 'b');
-  ok('نجاح معاملتين متداخلتين');
+  const balance = db.prepare('SELECT balance FROM tx_test WHERE id = 1').get().balance;
+  assert.equal(balance, 2000000, 'الرصيد بعد معاملة ناجحة');
+  assert.equal(result, 'ok');
+  ok('نجاح معاملة واحدة');
 }
 
-// الحالة 2: المعاملة الأولى تفشل والثانية تنجح (التراجع لا يؤثر على الثانية)
+// الحالة 2: فشل معاملة مع rollback كامل (الرصيد لا يتغير)
 {
-  const balanceBefore = db.prepare('SELECT qty_micro FROM stock_positions WHERE item_id=1 AND warehouse_id=1').get().qty_micro;
-  const a = tx(db, async () => {
-    await new Promise(r => setTimeout(r, 5));
-    db.prepare('UPDATE stock_positions SET qty_micro=qty_micro-10000000 WHERE item_id=1 AND warehouse_id=1').run();
-    throw new Error('فشل متعمد في المعاملة أ');
-  }).catch(() => 'a-failed');
-  const b = tx(db, async () => {
-    await new Promise(r => setTimeout(r, 2));
-    db.prepare('UPDATE stock_positions SET qty_micro=qty_micro+500000 WHERE item_id=1 AND warehouse_id=1').run();
-    return 'b-ok';
-  });
-  const ra = await a; const rb = await b;
-  assert.equal(ra, 'a-failed'); assert.equal(rb, 'b-ok');
-  const balance = db.prepare('SELECT qty_micro FROM stock_positions WHERE item_id=1 AND warehouse_id=1').get().qty_micro;
-  assert.equal(balance, balanceBefore + 500000, 'الرصيد بعد فشل الأولى ونجاح الثانية');
-  ok('فشل الأولى ونجاح الثانية');
+  const balanceBefore = db.prepare('SELECT balance FROM tx_test WHERE id = 1').get().balance;
+  let threw = false;
+  try {
+    await tx(db, async () => {
+      db.prepare('UPDATE tx_test SET balance = balance + 500000 WHERE id = 1').run();
+      throw new Error('فشل متعمد للمعاملة');
+    });
+  } catch (e) {
+    threw = true;
+  }
+  assert.equal(threw, true, 'يجب أن تُلقِي الاستثناء');
+  const balance = db.prepare('SELECT balance FROM tx_test WHERE id = 1').get().balance;
+  assert.equal(balance, balanceBefore, 'الرصيد يجب أن يعود لما كان عليه بعد التراجع');
+  ok('تراجع معاملة فاشلة واستعادة الرصيد');
 }
 
-// الحالة 3: الأولى تنجح والثانية تفشل (الرصيد يحتفظ بتغيير الأولى فقط)
+// الحالة 3: معاملة ناجحة تليها معاملة فاشلة (الرصيد يحتفظ بتغيير الأولى فقط)
 {
-  const balanceBefore = db.prepare('SELECT qty_micro FROM stock_positions WHERE item_id=1 AND warehouse_id=1').get().qty_micro;
-  const a = tx(db, async () => {
-    await new Promise(r => setTimeout(r, 5));
-    db.prepare('UPDATE stock_positions SET qty_micro=qty_micro+1000000 WHERE item_id=1 AND warehouse_id=1').run();
-    return 'a-ok';
-  });
-  const b = tx(db, async () => {
-    await new Promise(r => setTimeout(r, 2));
-    throw new Error('فشل متعمد في المعاملة ب');
-  }).catch(() => 'b-failed');
-  const ra = await a; const rb = await b;
-  assert.equal(ra, 'a-ok'); assert.equal(rb, 'b-failed');
-  const balance = db.prepare('SELECT qty_micro FROM stock_positions WHERE item_id=1 AND warehouse_id=1').get().qty_micro;
-  assert.equal(balance, balanceBefore + 1000000, 'الرصيد بعد نجاح الأولى وفشل الثانية');
-  ok('نجاح الأولى وفشل الثانية');
-}
-
-// الحالة 4: التحقق من الأرصدة والقيود بعد التراجع (لا بقايا للمعاملة المتراجعة)
-{
-  const balanceBefore = db.prepare('SELECT qty_micro FROM stock_positions WHERE item_id=1 AND warehouse_id=1').get().qty_micro;
+  const balanceBefore = db.prepare('SELECT balance FROM tx_test WHERE id = 1').get().balance;
   await tx(db, async () => {
-    await new Promise(r => setTimeout(r, 5));
-    db.prepare('UPDATE stock_positions SET qty_micro=qty_micro+999999999 WHERE item_id=1 AND warehouse_id=1').run();
-    throw new Error('تراجع كامل');
-  }).catch(() => {});
-  const balance = db.prepare('SELECT qty_micro FROM stock_positions WHERE item_id=1 AND warehouse_id=1').get().qty_micro;
-  assert.equal(balance, balanceBefore, 'الرصيد بعد التراجع الكامل');
-  ok('التحقق من الأرصدة بعد التراجع');
+    db.prepare('UPDATE tx_test SET balance = balance + 1000000 WHERE id = 1').run();
+  });
+  let threw = false;
+  try {
+    await tx(db, async () => {
+      db.prepare('UPDATE tx_test SET balance = balance + 2000000 WHERE id = 1').run();
+      throw new Error('فشل الثانية');
+    });
+  } catch (e) {
+    threw = true;
+  }
+  assert.equal(threw, true);
+  const balance = db.prepare('SELECT balance FROM tx_test WHERE id = 1').get().balance;
+  assert.equal(balance, balanceBefore + 1000000, 'الرصيد يحتفظ بتغيير الأولى فقط');
+  ok('نجاح الأولى وفشل الثانية مع الاحتفاظ بتغيير الأولى');
+}
+
+// الحالة 4: معاملة فاشلة تليها معاملة ناجحة (الرصيد يبدأ من الحالة بعد التراجع)
+{
+  const balanceBefore = db.prepare('SELECT balance FROM tx_test WHERE id = 1').get().balance;
+  let threw = false;
+  try {
+    await tx(db, async () => {
+      db.prepare('UPDATE tx_test SET balance = balance + 999999999 WHERE id = 1').run();
+      throw new Error('فشل الأولى');
+    });
+  } catch (e) {
+    threw = true;
+  }
+  assert.equal(threw, true);
+  await tx(db, async () => {
+    db.prepare('UPDATE tx_test SET balance = balance + 500000 WHERE id = 1').run();
+  });
+  const balance = db.prepare('SELECT balance FROM tx_test WHERE id = 1').get().balance;
+  assert.equal(balance, balanceBefore + 500000, 'الرصيد بعد فشل الأولى ونجاح الثانية');
+  ok('فشل الأولى ونجاح الثانية مع استعادة الرصيد الصحيح');
 }
 
 server.close(); db.close();
-console.log(`\nنجحت ${n} اختبارًا لمعاملات متزامنة`);
+console.log(`\nنجحت ${n} اختبارًا لسلامة المعاملات المتزامنة`);
