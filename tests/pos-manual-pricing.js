@@ -29,6 +29,14 @@ try {
   const capSet = await call('PUT','/api/users/2/pos-pricing',{ discount_limit:0, wholesale:false, manual_price:true, manual_price_cap:80 }, owner);
   assert.equal(capSet.st, 200);
 
+  // Legacy payload without manual fields must not revoke existing manual delegation.
+  const legacyCompat = await call('PUT','/api/users/2/pos-pricing',{ discount_limit:0, wholesale:false }, owner);
+  assert.equal(legacyCompat.st, 200, JSON.stringify(legacyCompat.j));
+  const afterLegacy = await call('GET','/api/users', null, owner);
+  const cashUser = afterLegacy.j.find(u => u.username === 'cash');
+  assert.equal(cashUser.pos_manual_price, 1);
+  assert.equal(cashUser.pos_manual_price_cap, 8000);
+
   const ok = await call('POST','/api/pos/sales',{ request_id: crypto.randomUUID(), pos_id:1, payment:'cash', lines:[{ item_id:serviceId, qty:1, override_price:60 }] }, staff);
   assert.equal(ok.st, 200, JSON.stringify(ok.j));
 
@@ -37,6 +45,21 @@ try {
 
   const product = await call('POST','/api/pos/sales',{ request_id: crypto.randomUUID(), pos_id:1, payment:'cash', lines:[{ item_id:productId, qty:1, override_price:30 }] }, staff);
   assert.equal(product.st, 403);
+
+  // Revoking delegation must affect the next sale even if staff session remains open.
+  const revoke = await call('PUT','/api/users/2/pos-pricing',{ discount_limit:0, wholesale:false, manual_price:false, manual_price_cap:0 }, owner);
+  assert.equal(revoke.st, 200);
+  const afterRevoke = await call('POST','/api/pos/sales',{ request_id: crypto.randomUUID(), pos_id:1, payment:'cash', lines:[{ item_id:serviceId, qty:1, override_price:60 }] }, staff);
+  assert.equal(afterRevoke.st, 403, JSON.stringify(afterRevoke.j));
+
+  // Re-delegate with a cap and ensure repeated identical service lines cannot bypass line-total cap.
+  const redelegate = await call('PUT','/api/users/2/pos-pricing',{ discount_limit:0, wholesale:false, manual_price:true, manual_price_cap:80 }, owner);
+  assert.equal(redelegate.st, 200);
+  const grouped = await call('POST','/api/pos/sales',{ request_id: crypto.randomUUID(), pos_id:1, payment:'cash', lines:[
+    { item_id:serviceId, qty:1, override_price:80 },
+    { item_id:serviceId, qty:1, override_price:80 }
+  ] }, staff);
+  assert.equal(grouped.st, 403, JSON.stringify(grouped.j));
 
   const audit = db.prepare("SELECT event,details FROM audit_events WHERE event='pos.sale.pricing' ORDER BY id DESC LIMIT 1").get();
   assert.equal(audit.event, 'pos.sale.pricing');
