@@ -17,6 +17,8 @@ backups/
 !server/license-pub.pem
 *.p12
 *.pfx
+*.cer
+*.crt
 *.bak
 *.mdf
 *.ldf

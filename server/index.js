@@ -384,7 +384,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const tls = certPath ? {cert:fs.readFileSync(certPath), key:fs.readFileSync(keyPath), minVersion:'TLSv1.2'} : undefined;
   const port = Number(process.env.PORT || 3000);
   const servers = [];
-  // خادم HTTPS على جميعinand واجهات الشبكة للوصول من أجهزة LAN
+  // خادم HTTPS على جميع واجهات الشبكة للوصول من أجهزة LAN
   if (tls) {
     const { server: httpsServer } = createApp({ dbFile: path.join(data, 'smartz.db'), licensePath: path.join(data, 'license.json'), tls });
     httpsServer.listen(port, '0.0.0.0', () => {
