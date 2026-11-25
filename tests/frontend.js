@@ -24,9 +24,9 @@ function environment(reduced=false, initial={}) {
  context.hooks.S.state={setup_needed:true,user:null,activity:'engineering'};
  return {doc,app,storage,session,location,hooks:context.hooks};
 }
-for(const activity of ['trade','events','engineering']) {
- const env=environment();await env.hooks.route();
- const cards=env.doc.querySelectorAll('[data-activity]');assert.equal(cards.length,3);
+for(const activity of ['trade']) {
+ const env=environment(false,{'smartz.workspace':'events'});await env.hooks.route();
+ const cards=env.doc.querySelectorAll('[data-activity]');assert.equal(cards.length,1);assert.equal(cards[0].dataset.activity,'trade');
  assert.ok(env.app.innerHTML.includes('saas-entry'));assert.ok(!env.doc.querySelector('#go'));
  assert.equal(env.doc.querySelector('.saas-entry').dataset.motion,'on');
  const toggle=env.doc.querySelector('#entry-motion');toggle.onclick();
@@ -51,15 +51,15 @@ await login.doc.querySelector('#login-form').onsubmit({preventDefault(){}});
 assert.equal(login.doc.querySelector('#go').disabled,false);
 assert.equal(login.doc.querySelector('#msg').textContent,'بيانات الدخول غير صحيحة');
 login.doc.querySelector('#back-activities').onclick({preventDefault(){}});
-assert.equal(login.doc.querySelectorAll('[data-activity]').length,3);
+assert.equal(login.doc.querySelectorAll('[data-activity]').length,1);
 const opening=environment();delete opening.session.almuhtarizOpened;await opening.hooks.route();
 assert.ok(opening.doc.querySelector('#skip-opening'),'Opening must be skippable');
 opening.doc.querySelector('#skip-opening').onclick();
-assert.equal(opening.session.almuhtarizOpened,'1');assert.equal(opening.doc.querySelectorAll('[data-activity]').length,3);
+assert.equal(opening.session.almuhtarizOpened,'1');assert.equal(opening.doc.querySelectorAll('[data-activity]').length,1);
 await opening.hooks.route();assert.equal(opening.doc.querySelector('#skip-opening'),null);
-const quiet=environment(true);delete quiet.session.almuhtarizOpened;await quiet.hooks.route();assert.equal(quiet.doc.querySelector('#skip-opening'),null);assert.equal(quiet.doc.querySelectorAll('[data-activity]').length,3);
+const quiet=environment(true);delete quiet.session.almuhtarizOpened;await quiet.hooks.route();assert.equal(quiet.doc.querySelector('#skip-opening'),null);assert.equal(quiet.doc.querySelectorAll('[data-activity]').length,1);
 const cashier=environment();cashier.hooks.S.state.user={id:2,username:'عامل',role:'staff'};cashier.hooks.S.activitySelected=true;let opened=0;
 cashier.hooks.pages.pos=async()=>{opened++;cashier.hooks.shell('<h1>نقطة البيع</h1>');};
 for(const hash of ['#settings','#reports','#items','#dashboard']){cashier.location.hash=hash;await cashier.hooks.route();assert.equal(cashier.location.hash,'#pos');}
 assert.equal(opened,4);assert.ok(!cashier.app.innerHTML.includes('href="#settings"'));assert.ok(!cashier.app.innerHTML.includes('href="#reports"'));assert.ok(!cashier.app.innerHTML.includes('href="#items"'));assert.equal(cashier.doc.querySelector('#workspace').hidden,true);
-console.log('نجحت اختبارات اختيار الأنشطة الثلاثة وحفظ التفضيل وتعطيل الحركة وتفضيل تقليل الحركة');
+console.log('نجحت اختبارات إظهار النشاط التجاري فقط وحفظ التفضيل وتعطيل الحركة وتفضيل تقليل الحركة');
