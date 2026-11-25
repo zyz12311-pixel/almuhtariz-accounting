@@ -25,8 +25,8 @@ export async function showCloudAdmin({api, organizationId, after}) {
       const allowed=new Set(member.pos_ids??[]);
       const assignable=points.filter(point=>allowed.has(point.id)||(point.active&&branches.some(branch=>branch.id===point.branch_id&&branch.active)));
       return `<form class="card" data-action="member" data-id="${esc(member.user_id)}">
-        ${member.user_id?'': '<label>بريد الحساب المؤكد<input type="email" name="email" maxlength="254" required></label>'}
-        <label>الدور<select name="role">${options(roles,member.role??'staff')}</select></label>
+        ${member.user_id?`<p><b>البريد:</b> ${esc(member.email??member.user_id)}</p>`:'<label>بريد الحساب المؤكد<input type="email" name="email" maxlength="254" required></label>'}
+        <label>الدور/الصفة<select name="role">${options(roles,member.role??'staff')}</select></label>
         ${activeField(member.active??true)}
         <fieldset data-assignments><legend>نقاط البيع المعيّنة</legend>
           ${assignable.map(point=>`<label><input type="checkbox" name="pos_ids" value="${esc(point.id)}" ${allowed.has(point.id)?'checked':''}> ${esc(branchNames[point.branch_id])} / ${esc(point.name)}${point.active&&branches.some(branch=>branch.id===point.branch_id&&branch.active)?'':' (موقوفة)'}</label>`).join('')||'<p>أضف نقطة بيع مفعّلة أولًا.</p>'}
@@ -34,15 +34,18 @@ export async function showCloudAdmin({api, organizationId, after}) {
         ${member.user_id?'<label><input type="checkbox" name="end_sessions"> إنهاء الجلسات الحالية لهذه المنشأة</label>':''}
         ${submit}</form>`;
     };
-    const edit=(label,html)=>`<details><summary>${esc(label)}</summary>${html}</details>`;
+    const edit=(label,html,id=null)=>`<details ${id?`data-member-details="${esc(id)}"`:''}><summary>${esc(label)}</summary>${html}</details>`;
     const panels={
       organization:`<form class="card" data-action="organization">${textField('اسم المنشأة','name',organization.name_ar)}
         <label>النشاط<select name="activity">${options(activities,organization.activity)}</select></label>${submit}</form>`,
       branches:edit('إضافة فرع',branchForm())+branches.map(branch=>edit(branch.name+(branch.active?'':' (موقوف)'),branchForm(branch))).join(''),
       points:edit('إضافة نقطة بيع',pointForm())+points.map(point=>edit(branchNames[point.branch_id]+' / '+point.name+(point.active?'':' (موقوفة)'),pointForm(point))).join(''),
-      members:'<p>أضف عضوًا ببريد حساب سحابي مؤكد. عند تغيير الدور أو إيقاف العضوية تُغلق جلسات العضو لهذه المنشأة، ويحتاج إلى تسجيل الدخول مجددًا عند التفعيل.</p>'+
+      members:'<p>أضف عضوًا ببريد حساب سحابي مؤكد. يظهر البريد والصفة لكل عضو، ويمكن تغيير الصفة من نموذج العضو. عند تغيير الدور أو إيقاف العضوية تُغلق جلسات العضو لهذه المنشأة، ويحتاج إلى تسجيل الدخول مجددًا عند التفعيل.</p>'+
+        `<div class="card"><table><thead><tr><th>البريد الإلكتروني</th><th>الصفة</th><th>الحالة</th><th>تعديل</th></tr></thead><tbody>${
+          members.map(member=>`<tr><td dir="ltr">${esc(member.email??member.user_id)}</td><td>${esc(roles[member.role]??member.role)}</td><td>${member.active?'مفعّل':'موقوف'}${member.self?' (أنت)':''}</td><td>${member.self?'—':'<button type="button" class="text-link" data-edit-member="'+esc(member.user_id)+'">تعديل/ترقية</button>'}</td></tr>`).join('')||'<tr><td colspan="4">لا يوجد أعضاء.</td></tr>'
+        }</tbody></table></div>`+
         edit('إضافة عضو',memberForm())+members.map(member=>edit((member.email??member.user_id)+' · '+roles[member.role]+(member.active?'':' (موقوف)'),
-          member.self?'<p>يمكن لمالك آخر تعديل عضويتك.</p>':memberForm(member))).join(''),
+          member.self?`<p><b>البريد:</b> ${esc(member.email??member.user_id)}</p><p><b>الصفة:</b> ${esc(roles[member.role]??member.role)}</p><p>يمكن لمالك آخر تعديل عضويتك.</p>`:memberForm(member), member.user_id)).join(''),
     };
     dialog.innerHTML=`<h2>إدارة المنشأة السحابية</h2><div class="row">
       ${Object.entries({organization:'المنشأة',branches:'الفروع',points:'نقاط البيع',members:'الفريق'}).map(([key,label])=>
@@ -52,6 +55,12 @@ export async function showCloudAdmin({api, organizationId, after}) {
     if(!dialog.open)dialog.showModal();
     const report=error=>{dialog.querySelector('[data-admin-status]').textContent=error.message;};
     dialog.querySelector('[data-close]').onclick=()=>dialog.close();
+    dialog.querySelectorAll('[data-edit-member]').forEach(button=>{
+      button.onclick=()=>{
+        const details=dialog.querySelector(`[data-member-details="${CSS.escape(button.dataset.editMember)}"]`);
+        if(details){ details.open=true; details.scrollIntoView({block:'nearest'}); }
+      };
+    });
     dialog.querySelectorAll('[data-section]').forEach(button=>{
       button.onclick=()=>redraw(button.dataset.section).catch(report);
     });

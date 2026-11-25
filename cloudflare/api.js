@@ -92,10 +92,23 @@ export async function cloudApi(request, env) {
     }
     if (path === '/api/login' && request.method === 'POST') {
       const input = await body(request);
+      const portals = { owner: 'dashboard', accountant: 'dashboard', staff: 'pos' };
+      const portal = input.portal == null ? '' : String(input.portal);
+      if (portal && !portals[portal]) throw new ApiError(400, 'اختر بوابة الدخول الصحيحة');
       if (typeof input.username !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.username.trim()) || typeof input.password !== 'string' || !input.password || input.password.length > 1024) throw new ApiError(400, 'أدخل البريد الإلكتروني وكلمة المرور.');
       const result = await upstream(env, '/auth/v1/token?grant_type=password', { method: 'POST', body: { email: input.username.trim(), password: input.password } });
       if (!/^[a-zA-Z0-9._-]{1,3800}$/.test(result.access_token || '')) throw new ApiError(503, 'تعذر إنشاء الجلسة.');
-      return json({ ok: true }, 200, { 'Set-Cookie': cookie(result.access_token, Math.min(Number(result.expires_in) || 3600, 3600)) });
+      const { members } = await identity(env, result.access_token);
+      const member = members[0];
+      if (!member || !portals[member.role]) {
+        try { await upstream(env, '/auth/v1/logout?scope=local', { token: result.access_token, method: 'POST' }); } catch {}
+        throw new ApiError(403, 'حسابك غير مرتبط بمنشأة مفعّلة بعد.');
+      }
+      if (portal && member.role !== portal) {
+        try { await upstream(env, '/auth/v1/logout?scope=local', { token: result.access_token, method: 'POST' }); } catch {}
+        throw new ApiError(403, 'هذا الحساب لا يطابق بوابة الدخول المختارة');
+      }
+      return json({ ok: true, role: member.role, destination: portals[member.role] }, 200, { 'Set-Cookie': cookie(result.access_token, Math.min(Number(result.expires_in) || 3600, 3600)) });
     }
     const token = session(request);
     if (path === '/api/logout' && request.method === 'POST') {

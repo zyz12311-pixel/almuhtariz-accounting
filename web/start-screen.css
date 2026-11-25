@@ -52,3 +52,15 @@
 @media(prefers-reduced-motion:reduce){.brand-opening *{animation:none!important}}
 @media(max-width:800px){.opening-emblem{width:200px;height:200px}.opening-emblem>img{width:150px;height:150px}.opening-identity>p{font-size:17px}#skip-opening{top:18px;left:18px}.saas-entry .entry-visual{transform:scale(.65);transform-origin:left top}.saas-entry .entry-copy h1{font-size:42px}.saas-entry .entry-copy h1 em{font-size:.72em}.saas-entry .entry-hero{margin-top:35px}}
 @media(max-height:760px) and (min-width:801px){.opening-emblem{width:200px;height:200px;margin-bottom:28px}.opening-emblem>img{width:150px;height:150px}.saas-entry .entry-hero{margin-top:5px;margin-bottom:12px}.saas-entry .entry-visual{transform:scale(.94)}}
+
+/* Three-portal login split */
+.portal-picker{border:1px solid #ffffff12;border-radius:14px;padding:14px 14px 10px;margin:0 0 20px;background:#0f151d66}
+.portal-picker legend{font-size:12px;color:#d8d6d0;padding:0 8px}
+.portal-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.portal-option{display:flex;flex-direction:column;gap:4px;padding:12px 10px;border:1px solid #ffffff12;border-radius:12px;background:#ffffff03;cursor:pointer;min-height:72px;transition:border-color .18s,background .18s,transform .18s}
+.portal-option input{position:absolute;opacity:0;pointer-events:none}
+.portal-option b{font-size:12px;color:#f3f0e8;font-weight:600;line-height:1.4}
+.portal-option small{font-size:10px;color:#9aa2af;line-height:1.6}
+.portal-option:hover,.portal-option:focus-within{border-color:#d3b06a66;background:#d3b06a0d;transform:translateY(-1px)}
+.portal-option.on{border-color:#e1bf74aa;background:linear-gradient(140deg,#d9b15a24,#ffffff06);box-shadow:inset 0 0 0 1px #e1bf7433}
+@media(max-width:800px){.portal-options{grid-template-columns:1fr}.portal-option{min-height:0;padding:12px 14px}}
