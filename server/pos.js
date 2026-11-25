@@ -39,6 +39,14 @@ export function normalizeBarcode(value) {
  if(!/^[\x20-\x7e]{1,80}$/.test(code))throw Error('الباركود يجب أن يكون 1–80 حرفًا قابلًا للطباعة');
  return code;
 }
+function itemKindForCap(quantities,key,id,db,activity){
+ const prior=quantities.get(key);
+ if(prior?.item_kind)return prior.item_kind;
+ const item=db.prepare('SELECT item_kind FROM items WHERE id=? AND active=1 AND activity=?').get(id,activity);
+ if(!item)throw Error('\u0635\u0646\u0641 \u063a\u064a\u0631 \u0645\u0648\u062c\u0648\u062f \u0623\u0648 \u0645\u0648\u0642\u0648\u0641 \u0623\u0648 \u0644\u0627 \u064a\u0646\u062a\u0645\u064a \u0625\u0644\u0649 \u0647\u0630\u0627 \u0627\u0644\u0646\u0634\u0627\u0629');
+ return item.item_kind;
+}
+
 export function canonicalPosSale(db,user,body) {
   const point=posPoint(db,user,body.pos_id);
   const hasActivity = db.prepare("SELECT COUNT(*) n FROM pragma_table_info('pos_points') WHERE name='activity'").get().n > 0;
@@ -53,11 +61,6 @@ export function canonicalPosSale(db,user,body) {
    if(!Number.isSafeInteger(id)||(unit!==null&&(!Number.isSafeInteger(unit)||unit<1))||!Number.isFinite(qty)||qty<=0||qty>1000000)throw Error('الصنف أو الكمية غير صالح');
    const {discount,override}=priceTerms(row);
    if(discount>Math.round(permissions.discount_limit*100))pricingDenied('الخصم يتجاوز الحد المسموح لهذا المستخدم');
-   if(override!==null){
-    if(!permissions.manual_price)pricingDenied('تغيير السعر غير مسموح لهذا المستخدم');
-    const cap=Number(scaledInteger(permissions.manual_price_cap,2,'سقف السعر اليدوي'));
-    if(override>cap)pricingDenied('السعر اليدوي يتجاوز السقف المسموح لهذا المستخدم');
-   }
    const scaleCode=normalizeBarcode(row.scale_code);
    const label=scaleCode?scaleLabel(db,scaleCode):null;
    if(scaleCode&&(!label||label.itemId!==id||unit!==null||qty!==label.qty||row.scale_mode!==label.mode))throw Error('ملصق الميزان لا يطابق الصنف أو الكمية. أعد المسح');
@@ -66,7 +69,20 @@ export function canonicalPosSale(db,user,body) {
    if(prior&&(prior.discount!==discount||prior.override!==override))throw Error('وحّد السعر والخصم لبنود الوحدة نفسها');
    const amount=(prior?.quantityMicro||0n)+scaledInteger(row.qty,6,'الكمية');
    if(amount>1000000000000n)throw Error('الكمية أكبر من المسموح');
-   quantities.set(key,{id,unit,qty:Number(amount)/1000000,quantityMicro:amount,discount,override,priceLabel:label?.mode==='price',tracking:[...(prior?.tracking||[]),...trackingInput(row.tracking)]});
+   if(override!==null){
+    if(!permissions.manual_price)pricingDenied('تغيير السعر غير مسموح لهذا المستخدم');
+    const kind=itemKindForCap(quantities,key,id,db,activity);
+    if(kind!=='service')pricingDenied('السعر اليدوي متاح للخدمات فقط');
+    const cap=permissions.manual_price_cap==null?null:Number(scaledInteger(permissions.manual_price_cap,2,'سقف السعر اليدوي'));
+    if(cap!==null){
+     if(override>cap)pricingDenied('السعر اليدوي يتجاوز السقف المسموح لهذا المستخدم');
+     const lineTotal=Number(((BigInt(override)*BigInt(amount))+500000n)/1000000n);
+     if(lineTotal>cap)pricingDenied('إجمالي السعر اليدوي للبند يتجاوز السقف المسموح لهذا المستخدم');
+    }
+    quantities.set(key,{id,unit,qty:Number(amount)/1000000,quantityMicro:amount,discount,override,priceLabel:label?.mode==='price',tracking:[...(prior?.tracking||[]),...trackingInput(row.tracking)],item_kind:kind});
+    continue;
+   }
+   quantities.set(key,{id,unit,qty:Number(amount)/1000000,quantityMicro:amount,discount,override,priceLabel:label?.mode==='price',tracking:[...(prior?.tracking||[]),...trackingInput(row.tracking)],item_kind:prior?.item_kind});
   }
   if(body.party_id&&!db.prepare("SELECT 1 FROM parties WHERE id=? AND kind IN ('customer','both')").get(body.party_id))throw Error('العميل غير موجود');
   const lines=[];
