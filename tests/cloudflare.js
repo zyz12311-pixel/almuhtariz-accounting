@@ -33,7 +33,7 @@ try{
   const login={method:'POST',headers:{Origin:'https://app.example','Content-Type':'application/json'},body:JSON.stringify({username:'owner@example.com',password:'test-password'})};
   const logged=await request('/api/login',login);
   assert.equal(logged.status,200);assert.match(logged.headers.get('set-cookie'),/HttpOnly; Secure; SameSite=Strict/);
-  assert.deepEqual(await logged.json(),{ok:true});
+  assert.deepEqual(await logged.json(),{ok:true,role:'owner',destination:'dashboard'});
   const before=calls.length;
   assert.equal((await request('/api/login',{...login,headers:{...login.headers,Origin:'https://evil.example'}})).status,403);
   assert.equal(calls.length,before);

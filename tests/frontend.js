@@ -26,15 +26,15 @@ function environment(reduced=false, initial={}) {
 }
 for(const activity of ['trade']) {
  const env=environment(false,{'smartz.workspace':'events'});await env.hooks.route();
- const cards=env.doc.querySelectorAll('[data-activity]');assert.equal(cards.length,1);assert.equal(cards[0].dataset.activity,'trade');
+ const portals=env.doc.querySelectorAll('[data-portal]');assert.equal(portals.length,3);assert.deepEqual(portals.map(p=>p.dataset.portal),['owner','accountant','staff']);
  assert.ok(env.app.innerHTML.includes('saas-entry'));assert.ok(!env.doc.querySelector('#go'));
  assert.equal(env.doc.querySelector('.saas-entry').dataset.motion,'on');
  const toggle=env.doc.querySelector('#entry-motion');toggle.onclick();
  assert.equal(env.doc.querySelector('.saas-entry').dataset.motion,'off');
  assert.equal(toggle.getAttribute('aria-pressed'),'false');
  assert.equal(env.storage.get('almuhtariz.motion'),'off');
- cards.find(card=>card.dataset.activity===activity).onclick();
- assert.equal(env.storage.get('smartz.workspace'),activity);
+ portals.find(card=>card.dataset.portal==='owner').onclick();
+ assert.equal(env.storage.get('almuhtariz.portal'),'owner');
  assert.equal(env.hooks.S.activitySelected,true);
  assert.ok(env.doc.querySelector('#go'),'Selection must reach the login/setup form');
 }
@@ -51,13 +51,13 @@ await login.doc.querySelector('#login-form').onsubmit({preventDefault(){}});
 assert.equal(login.doc.querySelector('#go').disabled,false);
 assert.equal(login.doc.querySelector('#msg').textContent,'بيانات الدخول غير صحيحة');
 login.doc.querySelector('#back-activities').onclick({preventDefault(){}});
-assert.equal(login.doc.querySelectorAll('[data-activity]').length,1);
+assert.equal(login.doc.querySelectorAll('[data-portal]').length,3);
 const opening=environment();delete opening.session.almuhtarizOpened;await opening.hooks.route();
 assert.ok(opening.doc.querySelector('#skip-opening'),'Opening must be skippable');
 opening.doc.querySelector('#skip-opening').onclick();
-assert.equal(opening.session.almuhtarizOpened,'1');assert.equal(opening.doc.querySelectorAll('[data-activity]').length,1);
+assert.equal(opening.session.almuhtarizOpened,'1');assert.equal(opening.doc.querySelectorAll('[data-portal]').length,3);
 await opening.hooks.route();assert.equal(opening.doc.querySelector('#skip-opening'),null);
-const quiet=environment(true);delete quiet.session.almuhtarizOpened;await quiet.hooks.route();assert.equal(quiet.doc.querySelector('#skip-opening'),null);assert.equal(quiet.doc.querySelectorAll('[data-activity]').length,1);
+const quiet=environment(true);delete quiet.session.almuhtarizOpened;await quiet.hooks.route();assert.equal(quiet.doc.querySelector('#skip-opening'),null);assert.equal(quiet.doc.querySelectorAll('[data-portal]').length,3);
 const cashier=environment();cashier.hooks.S.state.user={id:2,username:'عامل',role:'staff'};cashier.hooks.S.activitySelected=true;let opened=0;
 cashier.hooks.pages.pos=async()=>{opened++;cashier.hooks.shell('<h1>نقطة البيع</h1>');};
 for(const hash of ['#settings','#reports','#items','#dashboard']){cashier.location.hash=hash;await cashier.hooks.route();assert.equal(cashier.location.hash,'#pos');}
