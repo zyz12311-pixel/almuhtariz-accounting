@@ -12,26 +12,26 @@ export function configureSync(db,body){
  return syncInfo(db);
 }
 export function branchSnapshot(db){return tx(db,()=>({
- version:1,installation_id:db.prepare('SELECT id FROM installation LIMIT 1').get().id,captured_at:new Date().toISOString(),
- company:getSetting(db,'company'),
- tables:{
-  items:listItems(db),warehouses:db.prepare('SELECT id,name,active FROM warehouses').all(),valuation:stockValuation(db),
-  parties:db.prepare('SELECT id,name_ar,kind,vat_number,phone,address FROM parties').all(),
-  invoices:db.prepare('SELECT id,uuid,number,type,document_code,invoice_kind,status,party_id,payment,issue_date,subtotal,vat,total,pos_id,branch_id,created_by FROM invoices ORDER BY id').all(),
-  purchases:db.prepare('SELECT id,uuid,number,kind,supplier_id,supplier_reference,document_date,warehouse_id,payment,subtotal,vat,total,ref_purchase_id FROM purchases ORDER BY id').all(),
-  vouchers:db.prepare('SELECT id,number,kind,party_id,voucher_date,amount,cash_account,notes FROM cash_vouchers ORDER BY id').all(),
-  accounts:db.prepare('SELECT code,name_ar,type,postable FROM accounts ORDER BY code').all(),
-  journal_entries:db.prepare('SELECT id,entry_no,entry_date,description,source_type,source_id,branch_id FROM journal_entries ORDER BY id').all(),
-  journal_lines:db.prepare('SELECT id,entry_id,account_code,debit,credit FROM journal_lines ORDER BY id').all(),
-  stock_movements:db.prepare('SELECT id,item_id,warehouse_id,delta_micro,kind,invoice_id,purchase_id,reason,created_at FROM stock_movements ORDER BY id').all(),
-  shifts:db.prepare('SELECT id,pos_id,user_id,opening_cash,opened_at,closed_at,counted_cash,expected_cash,variance FROM pos_shifts ORDER BY id').all()
- }
+  version:1,installation_id:db.prepare('SELECT id FROM installation LIMIT 1').get().id,captured_at:new Date().toISOString(),
+  company:getSetting(db,'company'),
+  tables:{
+   items:listItems(db),warehouses:db.prepare('SELECT id,name,active FROM warehouses').all(),valuation:stockValuation(db),
+   parties:db.prepare('SELECT id,name_ar,kind,vat_number,phone,address FROM parties').all(),
+   invoices:db.prepare('SELECT id,uuid,number,type,document_code,invoice_kind,status,party_id,payment,issue_date,subtotal,vat,total,pos_id,branch_id,created_by FROM invoices ORDER BY id').all(),
+   purchases:db.prepare('SELECT id,uuid,number,kind,supplier_id,supplier_reference,document_date,warehouse_id,payment,subtotal,vat,total,ref_purchase_id FROM purchases ORDER BY id').all(),
+   vouchers:db.prepare('SELECT id,number,kind,party_id,voucher_date,amount,cash_account,notes FROM cash_vouchers ORDER BY id').all(),
+   accounts:db.prepare('SELECT code,name_ar,type,postable FROM accounts ORDER BY code').all(),
+   journal_entries:db.prepare('SELECT id,entry_no,entry_date,description,source_type,source_id,branch_id FROM journal_entries ORDER BY id').all(),
+   journal_lines:db.prepare('SELECT id,entry_id,account_code,debit,credit FROM journal_lines ORDER BY id').all(),
+   stock_movements:db.prepare('SELECT id,item_id,warehouse_id,delta_micro,kind,invoice_id,purchase_id,reason,created_at FROM stock_movements ORDER BY id').all(),
+   shifts:db.prepare('SELECT id,pos_id,user_id,opening_cash,opened_at,closed_at,counted_cash,expected_cash,variance FROM pos_shifts ORDER BY id').all()
+  }
 }));}
 export function syncBranch(db){
  if(running.has(db))return running.get(db);
  const task=(async()=>{
   const connection=db.prepare('SELECT * FROM sync_connection WHERE id=1').get();if(!connection||!connection.enabled)throw Error('المزامنة غير مفعلة');
-  const capture=tx(db,()=>({sequence:nextCounter(db,'cloud_snapshot'),snapshot:branchSnapshot(db)}));
+  const capture=await tx(db,async()=>({sequence:nextCounter(db,'cloud_snapshot'),snapshot:await branchSnapshot(db)}));
   const data=JSON.stringify(capture);if(Buffer.byteLength(data)>4500000)throw Error('البيانات تجاوزت حد نقل النسخة الحالية؛ لم يُرفع جزء ناقص. يلزم النقل المجزأ');
   let response,result;
   try{response=await fetch(ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+connection.device_token},body:data,redirect:'manual',signal:AbortSignal.timeout(25000)});result=await response.json();if(!response.ok||result.accepted!==true||result.sequence!==capture.sequence)throw Error('لم تؤكد السحابة حفظ اللقطة؛ راجع رمز الربط وحالة الخدمة');
