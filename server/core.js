@@ -49,13 +49,18 @@ function postEntryAtomic(db,e){
   if (d !== c || d === 0 || e.lines.length < 2) throw new Error('القيد غير متوازن');
   const id = db.prepare('INSERT INTO journal_entries(entry_no,entry_date,description,source_type,source_id,branch_id) VALUES(?,?,?,?,?,?)')
     .run(nextCounter(db, 'entry'), e.date, e.description ?? null, e.source_type ?? null, e.source_id ?? null, e.branch_id ?? null).lastInsertRowid;
-  const st = db.prepare('INSERT INTO journal_lines(entry_id,account_code,debit,credit,cost_center_id) VALUES(?,?,?,?,?)');
+  // التوافق مع المخططات الأقدم (قبل 023): اكتب البعد التحليلي فقط إذا كان العمود/الجدول موجودًا
+  const hasCC = db.prepare("SELECT COUNT(*) n FROM pragma_table_info('journal_lines') WHERE name='cost_center_id'").get().n > 0;
+  const hasCCTable = hasCC && db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='cost_centers'").get().n > 0;
+  const st = hasCC ? db.prepare('INSERT INTO journal_lines(entry_id,account_code,debit,credit,cost_center_id) VALUES(?,?,?,?,?)') : db.prepare('INSERT INTO journal_lines(entry_id,account_code,debit,credit) VALUES(?,?,?,?)');
   for (const l of e.lines) {
-    const cc=l.cost_center_id??e.cost_center_id;
-    if(cc!==null&&cc!==undefined&&!Number.isSafeInteger(Number(cc)))throw Error('مركز التكلفة غير صالح');
-    if(cc!==null&&cc!==undefined&&!db.prepare('SELECT 1 FROM cost_centers WHERE id=?').get(Number(cc)))throw Error('مركز التكلفة غير موجود');
+    const cc = hasCC ? (l.cost_center_id ?? e.cost_center_id ?? null) : null;
+    if (cc !== null && cc !== undefined) {
+      if (!Number.isSafeInteger(Number(cc))) throw Error('مركز التكلفة غير صالح');
+      if (hasCCTable && !db.prepare('SELECT 1 FROM cost_centers WHERE id=?').get(Number(cc))) throw Error('مركز التكلفة غير موجود');
+    }
     if(!Number.isSafeInteger(l.debit||0)||!Number.isSafeInteger(l.credit||0)||!db.prepare('SELECT 1 FROM accounts WHERE code=? AND postable=1').get(l.account))throw Error('حساب أو مبلغ القيد غير صالح');
-    const lineId=st.run(id,l.account,l.debit||0,l.credit||0,cc||null).lastInsertRowid;
+    const lineId = hasCC ? st.run(id,l.account,l.debit||0,l.credit||0,cc||null).lastInsertRowid : st.run(id,l.account,l.debit||0,l.credit||0).lastInsertRowid;
     if(l.party_id)db.prepare('INSERT INTO journal_party_links(line_id,party_id) VALUES(?,?)').run(lineId,l.party_id);
   }
   db.prepare('INSERT INTO journal_seals(entry_id) VALUES(?)').run(id);
