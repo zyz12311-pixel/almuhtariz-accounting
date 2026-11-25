@@ -7,6 +7,7 @@ import {activeShift} from './operations.js';
 import {appendAudit} from './audit.js';
 import {scaleLabel} from './pos-scale.js';
 import {posPoint,companyActivity} from './activity.js';
+import {itemPriceAtLevel} from './price-levels.js';
 
 export function posPricing(db, user) {
  if(user.role!=='staff')return {discount_limit:100,wholesale:true,override:true,manual_price:true,manual_price_cap:null};
@@ -53,7 +54,7 @@ export function canonicalPosSale(db,user,body) {
   const activity = hasActivity ? (point.activity || companyActivity(db)) : null;
   if(!Array.isArray(body.lines)||!body.lines.length||body.lines.length>200)throw Error('اختر من 1 إلى 200 بند');
   const level=body.price_level??'retail', permissions=posPricing(db,user);
-  if(!['retail','wholesale'].includes(level))throw Error('مستوى السعر غير صالح');
+  const levelRow=db.prepare('SELECT 1 FROM price_levels WHERE code=? AND active=1').get(level);if(!levelRow)throw Error('مستوى السعر غير صالح أو غير مفعل');
   if(level==='wholesale'&&!permissions.wholesale)pricingDenied('سعر الجملة غير مسموح لهذا المستخدم');
   const quantities=new Map();
   for(const row of body.lines){
@@ -93,7 +94,7 @@ export function canonicalPosSale(db,user,body) {
    if(unit&&!chosen)throw Error('\u0648\u062d\u062f\u0629 \u0627\u0644\u0635\u0646\u0641 \u063a\u064a\u0631 \u0645\u0648\u062c\u0648\u062f\u0629 \u0623\u0648 \u0645\u0648\u0642\u0648\u0641\u0629');
    if(unit&&activity&&item.activity!==activity)throw Error('\u0648\u062d\u062f\u0629 \u0627\u0644\u0635\u0646\u0641 \u0644\u0627 \u062a\u0646\u062a\u0645\u064a \u0625\u0644\u0649 \u0647\u0630\u0627 \u0627\u0644\u0646\u0634\u0627\u0629');
   if(override!==null&&user.role==='staff'&&item.item_kind!=='service')pricingDenied('السعر اليدوي متاح للخدمات فقط');
-  const product=chosen??item, listPrice=(level==='wholesale'&&!priceLabel?product.wholesale_price:null)??product.unit_price;
+  const product=chosen??item, listPrice=itemPriceAtLevel(db, item.id, product, level, priceLabel);
   lines.push({tracking,item_id:item.id,item_unit_id:unit,description:item.name_ar+(chosen?' — '+chosen.name:''),qty,
    unit_price:(override??listPrice)/100,discount_rate:discount/100,vat_rate:item.vat_rate,tax_category:item.tax_category,
    exemption_code:item.exemption_code,exemption_reason:item.exemption_reason});

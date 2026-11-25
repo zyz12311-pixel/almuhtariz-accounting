@@ -37,6 +37,7 @@ import {traceList} from './tracking.js';
 import {correctLegacyCost} from './cost-correction.js';
 import {allocateVoucher,voucherDetails,outstandingDocuments,reverseManualJournal} from './settlements.js';
 import {listCostCenters,createCostCenter,updateCostCenter,deleteCostCenter,costCenterReport} from './cost-centers.js';
+import {listPriceLevels,createPriceLevel,updatePriceLevel,deletePriceLevel,listItemPriceLevels,setItemPriceLevel} from './price-levels.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.join(here, '..', 'web');
@@ -262,6 +263,12 @@ export function createApp({ dbFile, licensePath, tls }) {
   route('POST', '/api/cost-centers', ({ body, user }) => createCostCenter(db, body), { accountant: true });
   route('PUT', '/api/cost-centers/:id', ({ params, body }) => updateCostCenter(db, Number(params.id), body), { accountant: true });
   route('DELETE', '/api/cost-centers/:id', ({ params }) => deleteCostCenter(db, Number(params.id)), { owner: true });
+  route('GET', '/api/price-levels', () => listPriceLevels(db), { accountant: true });
+  route('POST', '/api/price-levels', ({ body }) => createPriceLevel(db, body), { accountant: true });
+  route('PUT', '/api/price-levels/:id', ({ params, body }) => updatePriceLevel(db, Number(params.id), body), { accountant: true });
+  route('DELETE', '/api/price-levels/:id', ({ params }) => deletePriceLevel(db, Number(params.id)), { owner: true });
+  route('GET', '/api/items/:id/price-levels', ({ params }) => listItemPriceLevels(db, Number(params.id)), { accountant: true });
+  route('POST', '/api/items/:id/price-levels', ({ params, body }) => setItemPriceLevel(db, Number(params.id), body), { accountant: true });
   route('GET', '/api/invoices/:id/html', ({ params, query, user }) => { const i = getInvoice(db, params.id); need(i, 'غير موجودة');
     if(user.role==='staff'&&(Number(i.created_by)!==user.id||(query.profile&&query.profile!=='pos')))throw new HttpError(403,'يمكنك طباعة مبيعاتك بقالب نقطة البيع فقط');
     return new Raw(renderInvoice({ inv: i, company: i.company_snapshot || getSetting(db, 'company'), s: validatePrintSettings({}, getSetting(db, profileKey(query.profile || (user.role==='staff'?'pos':'accountant')))) })); },{cashier:true});
