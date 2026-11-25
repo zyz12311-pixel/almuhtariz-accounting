@@ -211,6 +211,7 @@ export function createApp({ dbFile, licensePath, tls }) {
   route('GET', '/api/users', () => db.prepare('SELECT id,username,role,active,pos_discount_limit,pos_wholesale FROM users').all().map(u=>({...u,pos_ids:db.prepare('SELECT pos_id FROM pos_user_access WHERE user_id=? ORDER BY pos_id').all(u.id).map(a=>a.pos_id)})), { owner: true });
   route('POST', '/api/users', ({ body }) => {
     const L = lic(); if (db.prepare('SELECT COUNT(*) n FROM users WHERE active=1').get().n >= L.max_users) throw new HttpError(403, `بلغت الحد المرخّص من المستخدمين (${L.max_users})`);
+    console.log('DEBUG setup body:', JSON.stringify(body));
     need(body.username && String(body.password || '').length >= 8 && ['owner', 'accountant', 'staff'].includes(body.role), 'بيانات المستخدم غير مكتملة');
     return tx(db,()=>{
       const point=body.role==='staff'?(body.pos_id?db.prepare('SELECT id FROM pos_points WHERE id=? AND active=1').get(body.pos_id):db.prepare('SELECT id FROM pos_points WHERE active=1 ORDER BY id LIMIT 1').get()):null;

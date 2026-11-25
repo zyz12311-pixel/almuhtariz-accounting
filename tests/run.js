@@ -22,3 +22,5 @@ await import('./cost-correction.js');
 await import('./tracking.js');
 await import('./transaction-overlap.js');
 await import('./sync-failure.js');
+await import('./sign-endpoint.js');
+await import('./sign-endpoint.js');
