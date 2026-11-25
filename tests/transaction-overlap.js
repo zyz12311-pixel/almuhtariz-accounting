@@ -2,15 +2,6 @@ import assert from 'node:assert/strict';
 import { openDb, tx } from '../server/db.js';
 import { seedCompany } from '../server/core.js';
 
-// اختبار سلامة المعاملات المتسلسلة (sequential tx isolation)
-// يختبر أن معاملة async على اتصال SQLite تُنفذ بشكل صحيح مع rollback صحيح عند الفشل.
-// ملاحظة هندسية: SQLite على اتصال واحد لا يدعم عزل معاملتين متزامنتين باستخدام SAVEPOINT.
-// عند تشغيل معاملة async وتنتظر (await)، وتعمل معاملة ثانية على نفس الاتصال قبل إنهاء
-// الأولى، فإن ROLLBACK TO savepoint الخاص بالمعاملة الأولى يلغي تغييرات المعاملة الثانية.
-// هذا عيب بنيوي في SQLite على اتصال واحد، وليس عيبًا في كود tx().
-// الحل الجذري requería استخدام اتصالات قاعدة بيانات منفصلة لكل معاملة، أو إعادة تصميم
-// tx() باستخدام طابور متسلسل يوقف التنفيذ حتى終わ المعاملة السابقة.
-// تم توثيق هذا العيب في GIT-SYNC-AND-BASELINE-REPORT.md section ه.
 const dir = await (await import('node:fs')).promises.mkdtemp(await (await import('node:path')).join(await (await import('node:os')).tmpdir(), 'almuhtariz-tx-'));
 const file = await (await import('node:path')).join(dir, 'tx.db');
 const db = openDb(file);
@@ -24,7 +15,7 @@ try {
 
   // الحالة 1: نجاح معاملة واحدة على اتصال SQLite
   {
-    const result = await tx(db, async () => {
+    const result = tx(db, () => {
       db.prepare('UPDATE tx_test SET balance = balance + 1000000 WHERE id = 1').run();
       return 'ok';
     });
@@ -39,7 +30,7 @@ try {
     const balanceBefore = db.prepare('SELECT balance FROM tx_test WHERE id = 1').get().balance;
     let threw = false;
     try {
-      await tx(db, async () => {
+      tx(db, () => {
         db.prepare('UPDATE tx_test SET balance = balance + 500000 WHERE id = 1').run();
         throw new Error('فشل متعمد للمعاملة');
       });
@@ -55,12 +46,12 @@ try {
   // الحالة 3: معاملة ناجحة تليها معاملة فاشلة (الرصيد يحتفظ بتغيير الأولى فقط)
   {
     const balanceBefore = db.prepare('SELECT balance FROM tx_test WHERE id = 1').get().balance;
-    await tx(db, async () => {
+    tx(db, () => {
       db.prepare('UPDATE tx_test SET balance = balance + 1000000 WHERE id = 1').run();
     });
     let threw = false;
     try {
-      await tx(db, async () => {
+      tx(db, () => {
         db.prepare('UPDATE tx_test SET balance = balance + 2000000 WHERE id = 1').run();
         throw new Error('فشل الثانية');
       });
@@ -78,7 +69,7 @@ try {
     const balanceBefore = db.prepare('SELECT balance FROM tx_test WHERE id = 1').get().balance;
     let threw = false;
     try {
-      await tx(db, async () => {
+      tx(db, () => {
         db.prepare('UPDATE tx_test SET balance = balance + 999999999 WHERE id = 1').run();
         throw new Error('فشل الأولى');
       });
@@ -86,12 +77,40 @@ try {
       threw = true;
     }
     assert.equal(threw, true);
-    await tx(db, async () => {
+    tx(db, () => {
       db.prepare('UPDATE tx_test SET balance = balance + 500000 WHERE id = 1').run();
     });
     const balance = db.prepare('SELECT balance FROM tx_test WHERE id = 1').get().balance;
     assert.equal(balance, balanceBefore + 500000, 'الرصيد بعد فشل الأولى ونجاح الثانية');
     ok('فشل الأولى ونجاح الثانية مع استعادة الرصيد الصحيح');
+  }
+
+  // Rejection must happen before the callback or SQLite connection is touched.
+  {
+    let started = false;
+    const callback = async () => {
+      started = true;
+      await Promise.resolve();
+    };
+    const untouchedDb = { exec() { assert.fail('tx() opened a savepoint'); } };
+    for (const fn of [callback, callback.bind(null)]) {
+      assert.throws(() => tx(untouchedDb, fn), {
+        name: 'TypeError', message: 'tx() requires a synchronous callback'
+      });
+    }
+    assert.equal(started, false);
+    ok('رفض دالة async قبل تشغيلها');
+  }
+
+  // A regular callback returning a promise must also roll back its writes.
+  {
+    const balanceBefore = db.prepare('SELECT balance FROM tx_test WHERE id = 1').get().balance;
+    assert.throws(() => tx(db, () => {
+      db.exec('UPDATE tx_test SET balance = 0 WHERE id = 1');
+      return Promise.reject(new Error('unexpected promise'));
+    }), { name: 'TypeError', message: 'tx() requires a synchronous callback' });
+    assert.equal(db.prepare('SELECT balance FROM tx_test WHERE id = 1').get().balance, balanceBefore);
+    ok('التراجع عن تغييرات دالة تعيد Promise');
   }
 
   console.log(`\nنجحت ${n} اختبارًا لسلامة المعاملات المتسلسلة على SQLite`);

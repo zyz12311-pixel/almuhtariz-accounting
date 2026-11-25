@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import {pipeline} from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { openDb } from './db.js';
+import { buildInvoiceXml } from './zatca/xml.js';
 import { hashPass, checkPass, toCents, fromCents, nowRiyadh, sha256b64 } from './lib.js';
 import { getSetting, setSetting, seedCompany, createInvoice, createCreditNote, createDebitNote, issueInvoice, getInvoice, trialBalance, vatReport } from './core.js';
 import { evaluate, verifyLicenseFile, PUB } from './license.js';
@@ -276,14 +277,13 @@ export function createApp({ dbFile, licensePath, tls }) {
     setSetting(db,'compliance',{...getSetting(db,'compliance'),certificate_pem:pem,private_key_pem:key});
     return {ok:true};
   },{owner:true});
-  route('POST','/api/invoices/:id/sign',async({params,user})=>{
+  route('POST','/api/invoices/:id/sign',({params,user})=>{
     if(user.role!=='owner')throw new HttpError(403,'لللمالك');
     const invoice=getInvoice(db,params.id);
     if(!invoice)throw new HttpError(404,'فاتورة غير موجودة');
     const company=getSetting(db,'company');
     const compliance=getSetting(db,'compliance');
     if(!compliance.certificate_pem||!compliance.private_key_pem)throw new HttpError(400,'شهادة ومفتاح التوقيع غير مهيأ');
-    const {buildInvoiceXml}=await import('./zatca/xml.js');
     const xml=buildInvoiceXml({invoice,company,taxes:[]});
     // Minimal XAdES signature placeholder — real XAdES builder is in zatca/signing.js
     const signedXml = `<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2">${xml.slice(xml.indexOf('>')+1)}</Invoice>`;
@@ -345,7 +345,7 @@ export function createApp({ dbFile, licensePath, tls }) {
       let out;
       if(req.method==='GET')out=await r.fn(context);
       else if(r.external){out=await r.fn(context);tx(db,()=>recordResult(out));}
-      else out=await tx(db,async()=>{const result=await r.fn(context);recordResult(result);return result;});
+      else out=tx(db,()=>{const result=r.fn(context);recordResult(result);return result;});
       if(out instanceof FileRaw){try{res.writeHead(200,{'Content-Type':'application/octet-stream','Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...out.headers});await pipeline(fs.createReadStream(out.download.file),res);}finally{await out.download.dispose();}return;}
       if (out instanceof Raw) return send(200, out.body, out.type, out.headers);
       send(200, JSON.stringify(out));
