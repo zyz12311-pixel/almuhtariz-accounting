@@ -31,7 +31,7 @@ export function syncBranch(db){
  if(running.has(db))return running.get(db);
  const task=(async()=>{
   const connection=db.prepare('SELECT * FROM sync_connection WHERE id=1').get();if(!connection||!connection.enabled)throw Error('المزامنة غير مفعلة');
-  const capture=await tx(db,async()=>({sequence:nextCounter(db,'cloud_snapshot'),snapshot:await branchSnapshot(db)}));
+  const capture=tx(db,()=>({sequence:nextCounter(db,'cloud_snapshot'),snapshot:branchSnapshot(db)}));
   const data=JSON.stringify(capture);if(Buffer.byteLength(data)>4500000)throw Error('البيانات تجاوزت حد نقل النسخة الحالية؛ لم يُرفع جزء ناقص. يلزم النقل المجزأ');
   let response,result;
   try{response=await fetch(ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+connection.device_token},body:data,redirect:'manual',signal:AbortSignal.timeout(25000)});result=await response.json();if(!response.ok||result.accepted!==true||result.sequence!==capture.sequence)throw Error('لم تؤكد السحابة حفظ اللقطة؛ راجع رمز الربط وحالة الخدمة');

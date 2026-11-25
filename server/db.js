@@ -3,6 +3,10 @@ import { migrate } from './migrate.js';
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
+import { types } from 'node:util';
+
+const asyncFunctionPrototype = Object.getPrototypeOf(async function () {});
+const asyncTransactionError = 'tx() requires a synchronous callback';
 
 export function openDb(file) {
   fs.mkdirSync(path.dirname(file),{recursive:true});
@@ -16,15 +20,16 @@ export function openDb(file) {
   } catch(error) {try{db.exec('ROLLBACK')}catch{}db.close();throw error;}
 }
 export function tx(db, fn) {
+  if (types.isAsyncFunction(fn) || Object.getPrototypeOf(fn) === asyncFunctionPrototype) {
+    throw new TypeError(asyncTransactionError);
+  }
   const savepoint = 'sp_' + Math.random().toString(36).slice(2);
   db.exec('SAVEPOINT ' + savepoint);
   try {
     const r = fn();
     if (r && typeof r.then === 'function') {
-      return r.then(
-        result => { db.exec('RELEASE ' + savepoint); return result; },
-        e => { try { db.exec('ROLLBACK TO ' + savepoint); db.exec('RELEASE ' + savepoint); } catch {} throw e; }
-      );
+      if (types.isPromise(r)) Promise.prototype.then.call(r, undefined, () => {});
+      throw new TypeError(asyncTransactionError);
     }
     db.exec('RELEASE ' + savepoint);
     return r;
