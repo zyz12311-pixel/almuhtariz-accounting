@@ -236,9 +236,13 @@ export function createApp({ dbFile, licensePath, tls }) {
   route('PUT','/api/users/:id/pos-pricing',({params,body})=>{
     const limit=Number(scaledInteger(body.discount_limit,2,'حد الخصم'));
     need(limit<=10000&&typeof body.wholesale==='boolean','أدخل حد خصم من 0 إلى 100% وحدد صلاحية سعر الجملة');
-    need(typeof body.manual_price==='boolean','حدد تفويض السعر اليدوي بشكل صريح');
-    const manual=body.manual_price;
-    const cap=manual?Number(scaledInteger(body.manual_price_cap,2,'سقف السعر اليدوي')):0;
+    const existing=db.prepare("SELECT pos_manual_price,pos_manual_price_cap FROM users WHERE id=? AND role='staff'").get(params.id);
+    need(existing,'اختر مستخدم نقطة بيع');
+    const manualProvided=Object.hasOwn(body,'manual_price');
+    if(manualProvided)need(typeof body.manual_price==='boolean','حدد تفويض السعر اليدوي بشكل صريح');
+    const manual=manualProvided?body.manual_price:Boolean(existing.pos_manual_price);
+    const capProvided=Object.hasOwn(body,'manual_price_cap');
+    const cap=manual?(capProvided?Number(scaledInteger(body.manual_price_cap,2,'سقف السعر اليدوي')):Number(existing.pos_manual_price_cap||0)):0;
     need(Number.isSafeInteger(cap)&&cap>=0,'أدخل سقف سعر يدوي صالحًا للخدمة');
     const updated=db.prepare("UPDATE users SET pos_discount_limit=?,pos_wholesale=?,pos_manual_price=?,pos_manual_price_cap=? WHERE id=? AND role='staff'")
       .run(limit,Number(body.wholesale),Number(manual),cap,params.id);
