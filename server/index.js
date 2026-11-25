@@ -7,8 +7,7 @@ import crypto from 'node:crypto';
 import {pipeline} from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { openDb } from './db.js';
-import { buildInvoiceXml } from './zatca/xml.js';
-import { hashPass, checkPass, toCents, fromCents, nowRiyadh, sha256b64 } from './lib.js';
+import { hashPass, checkPass, toCents, fromCents, nowRiyadh } from './lib.js';
 import { getSetting, setSetting, seedCompany, createInvoice, createCreditNote, createDebitNote, issueInvoice, getInvoice, trialBalance, vatReport } from './core.js';
 import { evaluate, verifyLicenseFile, PUB } from './license.js';
 import { renderInvoice, sampleInvoice } from './render.js';
@@ -281,15 +280,9 @@ export function createApp({ dbFile, licensePath, tls }) {
     if(user.role!=='owner')throw new HttpError(403,'لللمالك');
     const invoice=getInvoice(db,params.id);
     if(!invoice)throw new HttpError(404,'فاتورة غير موجودة');
-    const company=getSetting(db,'company');
     const compliance=getSetting(db,'compliance');
     if(!compliance.certificate_pem||!compliance.private_key_pem)throw new HttpError(400,'شهادة ومفتاح التوقيع غير مهيأ');
-    const xml=buildInvoiceXml({invoice,company,taxes:[]});
-    // Minimal XAdES signature placeholder — real XAdES builder is in zatca/signing.js
-    const signedXml = `<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2">${xml.slice(xml.indexOf('>')+1)}</Invoice>`;
-    const signedXmlWithSig = signedXml.replace('</Invoice>', '<sig:Signature xmlns:sig="http://www.w3.org/2000/09/xmldsig#"><sig:SignedInfo><sig:SignatureValue>placeholder</sig:SignatureValue></sig:SignedInfo></sig:Signature></Invoice>');
-    db.prepare("INSERT INTO invoice_documents(invoice_id,kind,content,sha256,created_at) VALUES(?,?,?,?,?)").run(invoice.id,'signed_xml',signedXmlWithSig,sha256b64(signedXmlWithSig),new Date().toISOString());
-    return {ok:true,phase:2,invoiceHash:sha256b64(xml),certFingerprint:sha256b64(compliance.certificate_pem)};
+    throw new HttpError(501,'التوقيع الإلكتروني XAdES غير مهيأ بعد؛ لا يمكن إصدار فاتورة موقعة للمرحلة الثانية');
   },{owner:true});
 
   // ---------- التقارير والإدارة ----------
