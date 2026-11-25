@@ -308,6 +308,7 @@ export function createApp({ dbFile, licensePath, tls }) {
   route('GET','/api/reports/ledger',({query})=>{validDate(query.from);validDate(query.to);return jobs.report('ledger',query.from,query.to,query);},{accountant:true});
   route('GET', '/api/reports/trial-balance', () => jobs.report('trial'), { accountant: true });
   route('GET','/api/reports/financial',({query})=>{validDate(query.from);validDate(query.to);return jobs.report('financial',query.from,query.to);},{accountant:true});
+  route('GET','/api/reports/aging',({query})=>{const asOf=validDate(query.as_of||nowRiyadh().date,{allowFuture:true});const kind=query.kind==='supplier'?'supplier':'customer';return jobs.report('aging',asOf,kind);},{accountant:true});
   route('GET', '/api/reports/vat', ({ query }) => { need(/^\d{4}-\d{2}-\d{2}$/.test(query.from || '') && /^\d{4}-\d{2}-\d{2}$/.test(query.to || ''), 'حدد الفترة (from/to بصيغة YYYY-MM-DD)'); return jobs.report('vat',query.from,query.to); }, { accountant: true });
   route('GET','/api/compliance/audit/verify',()=>jobs.audit(),{owner:true});
   route('GET', '/api/backup', async () => new FileRaw(await jobs.backup(), { 'Content-Disposition': `attachment; filename="almuhtariz-backup-${new Date().toISOString().slice(0,10)}.db"` }), { owner: true });

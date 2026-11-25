@@ -4,6 +4,7 @@ import { tx } from './db.js';
 import { toCents, fromCents, tlv, sha256b64, nowRiyadh } from './lib.js';
 import { calculateLines, taxBreakdown,sumCents } from './money.js';
 import { assertIssueData, assertSupported } from './compliance.js';
+import { validDate } from './dates.js';
 import { appendAudit } from './audit.js';
 import { buildInvoiceXml, candidateHash } from './zatca/xml.js';
 import { DEFAULTS, CHART } from './defaults.js';
@@ -60,9 +61,11 @@ function insertInvoice(db, o) {
   if(!Number.isSafeInteger(sub+vat))throw Error('قيمة الفاتورة أكبر من المسموح');
   const pos = db.prepare('SELECT * FROM pos_points WHERE id=? AND active=1').get(o.pos_id || 1);
   if (!pos) throw new Error('نقطة البيع غير موجودة أو موقوفة');
-  const id = db.prepare(`INSERT INTO invoices(uuid,type,pos_id,branch_id,party_id,payment,subtotal,vat,total,ref_invoice_id,reason,notes,created_by)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(crypto.randomUUID(), o.type, pos.id, pos.branch_id, o.party_id || null, o.payment || 'cash',
-    sub, vat, sub + vat, o.ref || null, o.reason || null, o.notes || null, o.user || null).lastInsertRowid;
+  const paymentTermsDays=Math.max(0,Math.min(3650,Number(o.payment_terms_days||0)|0));
+  const dueDate=o.due_date==null||o.due_date===''?null:validDate(o.due_date,{allowFuture:true});
+  const id = db.prepare(`INSERT INTO invoices(uuid,type,pos_id,branch_id,party_id,payment,subtotal,vat,total,ref_invoice_id,reason,notes,created_by,payment_terms_days,due_date)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(crypto.randomUUID(), o.type, pos.id, pos.branch_id, o.party_id || null, o.payment || 'cash',
+    sub, vat, sub + vat, o.ref || null, o.reason || null, o.notes || null, o.user || null,paymentTermsDays,dueDate).lastInsertRowid;
   const party=o.party_id?db.prepare('SELECT * FROM parties WHERE id=?').get(o.party_id):null;
   if(o.party_id&&(!party||!['customer','both'].includes(party.kind)))throw Error('اختر عميلًا صالحًا لفاتورة البيع');
   const kind=o.invoice_kind||(party&&(party.vat_number||party.entity_type==='business')?'standard':'simplified');
@@ -106,8 +109,9 @@ function issueInvoiceAtomic(db, id) {
   db.prepare('INSERT INTO invoice_documents VALUES(?,?,?,?,?)').run(id,'xml_candidate',xml,sha256b64(xml),new Date(now).toISOString());
   db.prepare('INSERT INTO regulatory_queue(invoice_id,operation,state,last_error,updated_at) VALUES(?,?,?,?,?)').run(id,inv.invoice_kind==='standard'?'clearance':'reporting','blocked','development: لم يتحقق SDK ولم تهيأ شهادة الجهاز أو التوقيع',new Date(now).toISOString());
   db.prepare('UPDATE chain SET icv=?, last_hash=? WHERE branch_id=?').run(icv, hash, inv.branch_id);
-  db.prepare("UPDATE invoices SET status='issued', number=?, issue_date=?, issue_time=?, icv=?, pih=?, hash=?, qr=? WHERE id=?")
-    .run(number, date, time, icv, pih, hash, qr, id);
+  const due=resolveInvoiceDue(date,inv.payment_terms_days,inv.due_date);
+  db.prepare("UPDATE invoices SET status='issued', number=?, issue_date=?, issue_time=?, icv=?, pih=?, hash=?, qr=?, due_date=?, payment_terms_days=? WHERE id=?")
+    .run(number, date, time, icv, pih, hash, qr, due.due_date, due.payment_terms_days, id);
   const cn = inv.type === '381', pay = ACC[inv.payment];
   const side = (acc, amt, debit) => ({ account: acc, debit: debit ? amt : 0, credit: debit ? 0 : amt });
   const lines = [side(pay, inv.total, !cn), side(ACC.sales, inv.subtotal, cn)];
@@ -122,10 +126,18 @@ function issueInvoiceAtomic(db, id) {
   return id;
 }
 
+function resolveInvoiceDue(issueDate,paymentTermsDays,dueDate){
+  const terms=Math.max(0,Math.min(3650,Number(paymentTermsDays||0)|0));
+  if(dueDate){const d=validDate(dueDate,{allowFuture:true});if(issueDate&&d<issueDate)throw Error('تاريخ الاستحقاق لا يمكن أن يسبق تاريخ المستند');return {payment_terms_days:terms,due_date:d};}
+  if(!issueDate) return {payment_terms_days:terms,due_date:null};
+  const d=new Date(issueDate+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+terms);
+  return {payment_terms_days:terms,due_date:d.toISOString().slice(0,10)};
+}
 export const createInvoice = (db, user, b) => tx(db, () => {
   assertSupported(b);const lines = calcLines(prepareItemLines(db,b.lines || [],b.pos_id));
   if (!lines.length) throw new Error('الفاتورة بلا بنود');
-  const id = insertInvoice(db, { type: '388', lines, pos_id: b.pos_id, party_id: b.party_id, payment: b.payment, notes:b.notes,user,invoice_kind:b.invoice_kind,supply_date:b.supply_date });
+  const due=resolveInvoiceDue(null,b.payment_terms_days,b.due_date);
+  const id = insertInvoice(db, { type: '388', lines, pos_id: b.pos_id, party_id: b.party_id, payment: b.payment, notes:b.notes,user,invoice_kind:b.invoice_kind,supply_date:b.supply_date,payment_terms_days:due.payment_terms_days,due_date:due.due_date });
   if (!b.draft) issueInvoice(db, id);
   return id;
 });
@@ -156,7 +168,7 @@ export const createCreditNote = (db, user, origId, b) => tx(db, () => {
     lines.push({ original_line_no: ol.line_no, tracking:trackingInput(w.tracking), description: ol.description, qty: q, unit_price: ol.unit_price / 100, vat_rate:ol.vat_rate,tax_category:ol.tax_category,exemption_code:ol.exemption_code,exemption_reason:ol.exemption_reason,unit_code:ol.unit_code,item_id:ol.item_id,stock_qty_micro:ol.stock_qty_micro?baseQuantity(q,ol.unit_factor_micro):0,unit_factor_micro:ol.unit_factor_micro,unit_name:ol.unit_name,warehouse_id:ol.warehouse_id });
   }
   if (!lines.length) throw new Error('لا توجد كميات للإرجاع');
-  const id = insertInvoice(db, { type: '381', lines: calcLines(lines).map((l, i) => ({ ...l, line_no: lines[i].original_line_no })), pos_id: o.pos_id, party_id: o.party_id, payment: o.payment, ref: origId, reason:b.reason,user,invoice_kind:o.invoice_kind,supply_date:o.supply_date });
+  const id = insertInvoice(db, { type: '381', lines: calcLines(lines).map((l, i) => ({ ...l, line_no: lines[i].original_line_no })), pos_id: o.pos_id, party_id: o.party_id, payment: o.payment, ref: origId, reason:b.reason,user,invoice_kind:o.invoice_kind,supply_date:o.supply_date,due_date:o.due_date||o.issue_date,payment_terms_days:o.payment_terms_days||0 });
   const amounts=db.prepare('SELECT subtotal,vat FROM invoices WHERE id=?').get(id),previous=db.prepare("SELECT COALESCE(SUM(subtotal),0) subtotal,COALESCE(SUM(vat),0) vat FROM invoices WHERE ref_invoice_id=? AND type='381' AND status='issued'").get(origId);
   if(previous.subtotal+amounts.subtotal>o.subtotal||previous.vat+amounts.vat>o.vat)throw Error('مبالغ الإشعار تتجاوز المتبقي؛ يلزم مسار تسوية كسور');
   issueInvoice(db,id);return id;
@@ -203,4 +215,4 @@ export function vatReport(db, from, to) {
            output_vat: fromCents(out), input_vat: fromCents(inn), net_due: fromCents(out - inn) };
 }
 
-export const createDebitNote=(db,user,originalId,body)=>tx(db,()=>{assertSupported(body);const original=getInvoice(db,originalId);if(!original||original.status!=='issued'||original.document_code!=='388')throw Error('الإشعار المدين يحتاج فاتورة أصلية صادرة');if(!String(body.reason||'').trim())throw Error('سبب الإشعار المدين مطلوب');const id=insertInvoice(db,{type:'388',document_code:'383',lines:calculateLines(body.lines),pos_id:original.pos_id,party_id:original.party_id,payment:original.payment,ref:originalId,reason:body.reason,user,invoice_kind:original.invoice_kind,supply_date:body.supply_date||original.supply_date});issueInvoice(db,id);return id;});
+export const createDebitNote=(db,user,originalId,body)=>tx(db,()=>{assertSupported(body);const original=getInvoice(db,originalId);if(!original||original.status!=='issued'||original.document_code!=='388')throw Error('الإشعار المدين يحتاج فاتورة أصلية صادرة');if(!String(body.reason||'').trim())throw Error('سبب الإشعار المدين مطلوب');const id=insertInvoice(db,{type:'388',document_code:'383',lines:calculateLines(body.lines),pos_id:original.pos_id,party_id:original.party_id,payment:original.payment,ref:originalId,reason:body.reason,user,invoice_kind:original.invoice_kind,supply_date:body.supply_date||original.supply_date,due_date:body.due_date||original.due_date||original.issue_date,payment_terms_days:body.payment_terms_days??original.payment_terms_days??0});issueInvoice(db,id);return id;});
