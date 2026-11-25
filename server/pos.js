@@ -9,9 +9,15 @@ import {scaleLabel} from './pos-scale.js';
 import {posPoint,companyActivity} from './activity.js';
 
 export function posPricing(db, user) {
- if(user.role!=='staff')return {discount_limit:100,wholesale:true,override:true};
- const permissions=db.prepare('SELECT pos_discount_limit,pos_wholesale FROM users WHERE id=?').get(user.id);
- return {discount_limit:(permissions?.pos_discount_limit||0)/100,wholesale:Boolean(permissions?.pos_wholesale),override:false};
+ if(user.role!=='staff')return {discount_limit:100,wholesale:true,override:true,manual_price:true,manual_price_cap:null};
+ const permissions=db.prepare('SELECT pos_discount_limit,pos_wholesale,pos_manual_price,pos_manual_price_cap FROM users WHERE id=?').get(user.id);
+ return {
+  discount_limit:(permissions?.pos_discount_limit||0)/100,
+  wholesale:Boolean(permissions?.pos_wholesale),
+  override:Boolean(permissions?.pos_manual_price),
+  manual_price:Boolean(permissions?.pos_manual_price),
+  manual_price_cap:(permissions?.pos_manual_price_cap||0)/100,
+ };
 }
 
 function priceTerms(row) {
@@ -47,7 +53,11 @@ export function canonicalPosSale(db,user,body) {
    if(!Number.isSafeInteger(id)||(unit!==null&&(!Number.isSafeInteger(unit)||unit<1))||!Number.isFinite(qty)||qty<=0||qty>1000000)throw Error('الصنف أو الكمية غير صالح');
    const {discount,override}=priceTerms(row);
    if(discount>Math.round(permissions.discount_limit*100))pricingDenied('الخصم يتجاوز الحد المسموح لهذا المستخدم');
-   if(override!==null&&!permissions.override)pricingDenied('تغيير السعر غير مسموح لهذا المستخدم');
+   if(override!==null){
+    if(!permissions.manual_price)pricingDenied('تغيير السعر غير مسموح لهذا المستخدم');
+    const cap=Number(scaledInteger(permissions.manual_price_cap,2,'سقف السعر اليدوي'));
+    if(override>cap)pricingDenied('السعر اليدوي يتجاوز السقف المسموح لهذا المستخدم');
+   }
    const scaleCode=normalizeBarcode(row.scale_code);
    const label=scaleCode?scaleLabel(db,scaleCode):null;
    if(scaleCode&&(!label||label.itemId!==id||unit!==null||qty!==label.qty||row.scale_mode!==label.mode))throw Error('ملصق الميزان لا يطابق الصنف أو الكمية. أعد المسح');
@@ -66,6 +76,7 @@ export function canonicalPosSale(db,user,body) {
   const chosen=unit?db.prepare('SELECT * FROM item_units WHERE id=? AND item_id=? AND active=1').get(unit,id):null;
    if(unit&&!chosen)throw Error('\u0648\u062d\u062f\u0629 \u0627\u0644\u0635\u0646\u0641 \u063a\u064a\u0631 \u0645\u0648\u062c\u0648\u062f\u0629 \u0623\u0648 \u0645\u0648\u0642\u0648\u0641\u0629');
    if(unit&&activity&&item.activity!==activity)throw Error('\u0648\u062d\u062f\u0629 \u0627\u0644\u0635\u0646\u0641 \u0644\u0627 \u062a\u0646\u062a\u0645\u064a \u0625\u0644\u0649 \u0647\u0630\u0627 \u0627\u0644\u0646\u0634\u0627\u0629');
+  if(override!==null&&item.item_kind!=='service')pricingDenied('السعر اليدوي متاح للخدمات فقط');
   const product=chosen??item, listPrice=(level==='wholesale'&&!priceLabel?product.wholesale_price:null)??product.unit_price;
   lines.push({tracking,item_id:item.id,item_unit_id:unit,description:item.name_ar+(chosen?' — '+chosen.name:''),qty,
    unit_price:(override??listPrice)/100,discount_rate:discount/100,vat_rate:item.vat_rate,tax_category:item.tax_category,

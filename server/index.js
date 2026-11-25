@@ -212,7 +212,7 @@ export function createApp({ dbFile, licensePath, tls }) {
   },{owner:true});
 
   // ---------- المستخدمون ----------
-  route('GET', '/api/users', () => db.prepare('SELECT id,username,role,active,pos_discount_limit,pos_wholesale FROM users').all().map(u=>({...u,pos_ids:db.prepare('SELECT pos_id FROM pos_user_access WHERE user_id=? ORDER BY pos_id').all(u.id).map(a=>a.pos_id)})), { owner: true });
+  route('GET', '/api/users', () => db.prepare('SELECT id,username,role,active,pos_discount_limit,pos_wholesale,pos_manual_price,pos_manual_price_cap FROM users').all().map(u=>({...u,pos_ids:db.prepare('SELECT pos_id FROM pos_user_access WHERE user_id=? ORDER BY pos_id').all(u.id).map(a=>a.pos_id)})), { owner: true });
   route('POST', '/api/users', ({ body }) => {
     const L = lic(); if (db.prepare('SELECT COUNT(*) n FROM users WHERE active=1').get().n >= L.max_users) throw new HttpError(403, `بلغت الحد المرخّص من المستخدمين (${L.max_users})`);
     
@@ -236,8 +236,11 @@ export function createApp({ dbFile, licensePath, tls }) {
   route('PUT','/api/users/:id/pos-pricing',({params,body})=>{
     const limit=Number(scaledInteger(body.discount_limit,2,'حد الخصم'));
     need(limit<=10000&&typeof body.wholesale==='boolean','أدخل حد خصم من 0 إلى 100% وحدد صلاحية سعر الجملة');
-    const updated=db.prepare("UPDATE users SET pos_discount_limit=?,pos_wholesale=? WHERE id=? AND role='staff'")
-      .run(limit,Number(body.wholesale),params.id);
+    const manual=Boolean(body.manual_price);
+    const cap=manual?Number(scaledInteger(body.manual_price_cap,2,'سقف السعر اليدوي')):0;
+    need(Number.isSafeInteger(cap)&&cap>=0,'أدخل سقف سعر يدوي صالحًا للخدمة');
+    const updated=db.prepare("UPDATE users SET pos_discount_limit=?,pos_wholesale=?,pos_manual_price=?,pos_manual_price_cap=? WHERE id=? AND role='staff'")
+      .run(limit,Number(body.wholesale),Number(manual),cap,params.id);
     need(updated.changes,'اختر مستخدم نقطة بيع');
     return {ok:true};
   },{owner:true});
