@@ -28,5 +28,6 @@ await import('./pos-manual-pricing.js');
 await import('./due-aging.js');
 await import('./cost-centers.js');
 await import('./price-levels.js');
+await import('./price-levels-extra.js');
 
 

@@ -30,10 +30,10 @@ try{
  const ipl=(await call('POST','/api/items/'+item+'/price-levels',{level_id:dist.id,unit_price:'80.00'},owner)).j;
  assert.equal(ipl.unit_price,80);
  const ipls=(await call('GET','/api/items/'+item+'/price-levels',null,owner)).j;
- assert.equal(ipls.find(l=>l.code==='distributor').unit_price,80);
+ assert.equal(ipls.items.find(l=>l.code==='distributor').unit_price,80);
  // cashier with wholesale permission
  await call('POST','/api/users',{username:'cashier',password:'password123',role:'staff',pos_id:1},owner);
- await call('PUT','/api/users/2/pos-pricing',{discount_limit:0,wholesale:true,manual_price:false,manual_price_cap:0},owner);
+ await call('PUT','/api/users/2/pos-pricing',{discount_limit:0,wholesale:true,manual_price:false,manual_price_cap:0,allowed_price_levels:['distributor']},owner);
  const cashier=(await call('POST','/api/login',{username:'cashier',password:'password123'})).r.headers.get('set-cookie').split(';')[0];
  const sale=(lines,terms={},cookie=cashier)=>call('POST','/api/pos/sales',{pos_id:1,lines,...terms},cookie);
  const totalOf=async(saleRes)=>{const inv=await call('GET','/api/invoices/'+saleRes.j.id,null,cashier);return inv.j.total;};

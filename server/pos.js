@@ -3,21 +3,24 @@ import crypto from 'node:crypto';
 import { createInvoice } from './core.js';
 import { tx } from './db.js';
 import {scaledInteger} from './money.js';
+import {nowRiyadh} from './lib.js';
 import {activeShift} from './operations.js';
 import {appendAudit} from './audit.js';
 import {scaleLabel} from './pos-scale.js';
 import {posPoint,companyActivity} from './activity.js';
-import {itemPriceAtLevel} from './price-levels.js';
+import {itemPriceAtLevel,resolvePartyLevel} from './price-levels.js';
 
 export function posPricing(db, user) {
- if(user.role!=='staff')return {discount_limit:100,wholesale:true,override:true,manual_price:true,manual_price_cap:null};
- const permissions=db.prepare('SELECT pos_discount_limit,pos_wholesale,pos_manual_price,pos_manual_price_cap FROM users WHERE id=?').get(user.id);
+ if(user.role!=='staff')return {discount_limit:100,wholesale:true,override:true,manual_price:true,manual_price_cap:null,allowed_price_levels:null};
+ const permissions=db.prepare('SELECT pos_discount_limit,pos_wholesale,pos_manual_price,pos_manual_price_cap,allowed_price_levels FROM users WHERE id=?').get(user.id);
+ let allowed=[];try{allowed=JSON.parse(permissions?.allowed_price_levels||'[]');}catch{allowed=[];}
  return {
   discount_limit:(permissions?.pos_discount_limit||0)/100,
   wholesale:Boolean(permissions?.pos_wholesale),
   override:Boolean(permissions?.pos_manual_price),
   manual_price:Boolean(permissions?.pos_manual_price),
   manual_price_cap:(permissions?.pos_manual_price_cap||0)/100,
+  allowed_price_levels:allowed,
  };
 }
 
@@ -53,9 +56,19 @@ export function canonicalPosSale(db,user,body) {
   const hasActivity = db.prepare("SELECT COUNT(*) n FROM pragma_table_info('pos_points') WHERE name='activity'").get().n > 0;
   const activity = hasActivity ? (point.activity || companyActivity(db)) : null;
   if(!Array.isArray(body.lines)||!body.lines.length||body.lines.length>200)throw Error('اختر من 1 إلى 200 بند');
-  const level=body.price_level??'retail', permissions=posPricing(db,user);
+  const permissions=posPricing(db,user);
+  const partyId=body.party_id?Number(body.party_id):null;
+  const asOf=body.supply_date||nowRiyadh().date;
+  const partyLevel=partyId?resolvePartyLevel(db,partyId,asOf):null;
+  const level=body.price_level??partyLevel??'retail';
   const levelRow=db.prepare('SELECT 1 FROM price_levels WHERE code=? AND active=1').get(level);if(!levelRow)throw Error('مستوى السعر غير صالح أو غير مفعل');
-  if(level==='wholesale'&&!permissions.wholesale)pricingDenied('سعر الجملة غير مسموح لهذا المستخدم');
+  if(user.role==='staff'){
+   if(level==='wholesale'){if(!permissions.wholesale)pricingDenied('سعر الجملة غير مسموح لهذا المستخدم');}
+   else if(level!=='retail'){
+    const allowed=permissions.allowed_price_levels||[];
+    if(!allowed.includes(level))pricingDenied('المستوى السعري غير مسموح لهذا المستخدم');
+   }
+  }
   const quantities=new Map();
   for(const row of body.lines){
    const id=Number(row.item_id),unit=row.item_unit_id==null||row.item_unit_id===''?null:Number(row.item_unit_id),qty=Number(row.qty);
@@ -94,7 +107,7 @@ export function canonicalPosSale(db,user,body) {
    if(unit&&!chosen)throw Error('\u0648\u062d\u062f\u0629 \u0627\u0644\u0635\u0646\u0641 \u063a\u064a\u0631 \u0645\u0648\u062c\u0648\u062f\u0629 \u0623\u0648 \u0645\u0648\u0642\u0648\u0641\u0629');
    if(unit&&activity&&item.activity!==activity)throw Error('\u0648\u062d\u062f\u0629 \u0627\u0644\u0635\u0646\u0641 \u0644\u0627 \u062a\u0646\u062a\u0645\u064a \u0625\u0644\u0649 \u0647\u0630\u0627 \u0627\u0644\u0646\u0634\u0627\u0629');
   if(override!==null&&user.role==='staff'&&item.item_kind!=='service')pricingDenied('السعر اليدوي متاح للخدمات فقط');
-  const product=chosen??item, listPrice=itemPriceAtLevel(db, item.id, product, level, priceLabel);
+  const product=chosen??item, listPrice=itemPriceAtLevel(db, item.id, product, level, priceLabel, chosen?chosen.id:null);
   lines.push({tracking,item_id:item.id,item_unit_id:unit,description:item.name_ar+(chosen?' — '+chosen.name:''),qty,
    unit_price:(override??listPrice)/100,discount_rate:discount/100,vat_rate:item.vat_rate,tax_category:item.tax_category,
    exemption_code:item.exemption_code,exemption_reason:item.exemption_reason});

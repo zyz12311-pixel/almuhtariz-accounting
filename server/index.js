@@ -37,7 +37,7 @@ import {traceList} from './tracking.js';
 import {correctLegacyCost} from './cost-correction.js';
 import {allocateVoucher,voucherDetails,outstandingDocuments,reverseManualJournal} from './settlements.js';
 import {listCostCenters,createCostCenter,updateCostCenter,deleteCostCenter,costCenterReport} from './cost-centers.js';
-import {listPriceLevels,createPriceLevel,updatePriceLevel,deletePriceLevel,listItemPriceLevels,setItemPriceLevel} from './price-levels.js';
+import {listPriceLevels,createPriceLevel,updatePriceLevel,deletePriceLevel,listItemPriceLevels,setItemPriceLevel,listPartyPriceLists,createPartyPriceList,deletePartyPriceList} from './price-levels.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.join(here, '..', 'web');
@@ -214,7 +214,7 @@ export function createApp({ dbFile, licensePath, tls }) {
   },{owner:true});
 
   // ---------- المستخدمون ----------
-  route('GET', '/api/users', () => db.prepare('SELECT id,username,role,active,pos_discount_limit,pos_wholesale,pos_manual_price,pos_manual_price_cap FROM users').all().map(u=>({...u,pos_ids:db.prepare('SELECT pos_id FROM pos_user_access WHERE user_id=? ORDER BY pos_id').all(u.id).map(a=>a.pos_id)})), { owner: true });
+  route('GET', '/api/users', () => db.prepare('SELECT id,username,role,active,pos_discount_limit,pos_wholesale,pos_manual_price,pos_manual_price_cap,allowed_price_levels FROM users').all().map(u=>({...u,allowed_price_levels:(()=>{try{return JSON.parse(u.allowed_price_levels||'[]');}catch{return [];}})(),pos_ids:db.prepare('SELECT pos_id FROM pos_user_access WHERE user_id=? ORDER BY pos_id').all(u.id).map(a=>a.pos_id)})), { owner: true });
   route('POST', '/api/users', ({ body }) => {
     const L = lic(); if (db.prepare('SELECT COUNT(*) n FROM users WHERE active=1').get().n >= L.max_users) throw new HttpError(403, `بلغت الحد المرخّص من المستخدمين (${L.max_users})`);
     
@@ -246,8 +246,13 @@ export function createApp({ dbFile, licensePath, tls }) {
     const capProvided=Object.hasOwn(body,'manual_price_cap');
     const cap=manual?(capProvided?Number(scaledInteger(body.manual_price_cap,2,'سقف السعر اليدوي')):Number(existing.pos_manual_price_cap||0)):0;
     need(Number.isSafeInteger(cap)&&cap>=0,'أدخل سقف سعر يدوي صالحًا للخدمة');
-    const updated=db.prepare("UPDATE users SET pos_discount_limit=?,pos_wholesale=?,pos_manual_price=?,pos_manual_price_cap=? WHERE id=? AND role='staff'")
-      .run(limit,Number(body.wholesale),Number(manual),cap,params.id);
+    const allowedProvided=Object.hasOwn(body,'allowed_price_levels');
+    const allowed=allowedProvided?body.allowed_price_levels:[];
+    need(Array.isArray(allowed),'قائمة المستويات المسموح بها يجب أن تكون مصفوفة');
+    const cleanAllowed=[...new Set(allowed.map(x=>String(x).trim()).filter(Boolean))];
+    for(const code of cleanAllowed)need(db.prepare('SELECT 1 FROM price_levels WHERE code=? AND active=1').get(code),'مستوى سعري غير صالح في قائمة المسموح');
+    const updated=db.prepare("UPDATE users SET pos_discount_limit=?,pos_wholesale=?,pos_manual_price=?,pos_manual_price_cap=?,allowed_price_levels=? WHERE id=? AND role='staff'")
+      .run(limit,Number(body.wholesale),Number(manual),cap,JSON.stringify(cleanAllowed),params.id);
     need(updated.changes,'اختر مستخدم نقطة بيع');
     return {ok:true};
   },{owner:true});
@@ -269,6 +274,9 @@ export function createApp({ dbFile, licensePath, tls }) {
   route('DELETE', '/api/price-levels/:id', ({ params }) => deletePriceLevel(db, Number(params.id)), { owner: true });
   route('GET', '/api/items/:id/price-levels', ({ params }) => listItemPriceLevels(db, Number(params.id)), { accountant: true });
   route('POST', '/api/items/:id/price-levels', ({ params, body }) => setItemPriceLevel(db, Number(params.id), body), { accountant: true });
+  route('GET', '/api/parties/:id/price-lists', ({ params }) => listPartyPriceLists(db, Number(params.id)), { accountant: true });
+  route('POST', '/api/parties/:id/price-lists', ({ params, body }) => createPartyPriceList(db, Number(params.id), body), { accountant: true });
+  route('DELETE', '/api/price-lists/:id', ({ params }) => deletePartyPriceList(db, Number(params.id)), { accountant: true });
   route('GET', '/api/invoices/:id/html', ({ params, query, user }) => { const i = getInvoice(db, params.id); need(i, 'غير موجودة');
     if(user.role==='staff'&&(Number(i.created_by)!==user.id||(query.profile&&query.profile!=='pos')))throw new HttpError(403,'يمكنك طباعة مبيعاتك بقالب نقطة البيع فقط');
     return new Raw(renderInvoice({ inv: i, company: i.company_snapshot || getSetting(db, 'company'), s: validatePrintSettings({}, getSetting(db, profileKey(query.profile || (user.role==='staff'?'pos':'accountant')))) })); },{cashier:true});

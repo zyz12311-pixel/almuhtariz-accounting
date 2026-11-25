@@ -1,0 +1,14 @@
+export async function renderCostCenters({api,shell,esc,money,S}){
+ const $=s=>document.querySelector(s),today=S.state.today;
+ shell(`<h1>مراكز التكلفة</h1><div id="cc-error" class="msg" hidden></div>
+ <section class="card"><h2>إضافة مركز</h2><div class="row"><label>الكود<input id="cc-code" dir="ltr" maxlength="30"></label><label>الاسم<input id="cc-name"></label><button id="cc-add" class="p">إضافة</button></div></section>
+ <section class="card"><h2>المراكز</h2><div id="cc-list"></div></section>
+ <section class="card"><h2>تقرير مراكز التكلفة</h2><p>إجماليات المراكز per حساب تتطابق مع حركة الحسابات في الأستاذ العام لنفس الفترة.</p><div class="row"><label>من<input id="cc-from" type="date" value="${today.slice(0,8)}01"></label><label>إلى<input id="cc-to" type="date" value="${today}"></label><button id="cc-report" class="p">عرض التقرير</button></div><div id="cc-report-out"></div></section>`);
+ const showError=e=>{const el=$('#cc-error');el.textContent=e.message;el.hidden=false;};
+ const table=(head,rows)=>'<div class="table-scroll"><table><thead><tr>'+head.map(x=>'<th>'+esc(x)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.map(x=>'<td>'+esc(x)+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>';
+ const load=async()=>{try{const rows=await api('cost-centers');$('#cc-list').innerHTML=table(['الكود','الاسم','الحالة',''],rows.map(c=>[c.code,c.name_ar,c.active?'مفعّل':'موقوف',`<button data-toggle="${c.id}" data-active="${c.active}">${c.active?'إيقاف':'تفعيل'}</button> <button data-del="${c.id}">حذف</button>`]));$$('#cc-list [data-toggle]').forEach(b=>b.onclick=guard(async()=>{await api('cost-centers/'+b.dataset.toggle,{method:'PUT',body:{active:b.dataset.active!=='1'}});await load();}));$$('#cc-list [data-del]').forEach(b=>b.onclick=guard(async()=>{if(!confirm('حذف المركز؟'))return;await api('cost-centers/'+b.dataset.del,{method:'DELETE'});await load();}));}catch(e){showError(e);}};
+ $('#cc-add').onclick=guard(async()=>{await api('cost-centers',{method:'POST',body:{code:$('#cc-code').value,name_ar:$('#cc-name').value}});$('#cc-code').value='';$('#cc-name').value='';await load();});
+ const loadReport=async()=>{try{const r=await api(`reports/cost-centers?from=${$('#cc-from').value}&to=${$('#cc-to').value}`);const head=['المركز','الحساب','مدين','دائن','الرصيد'];const rows=[];for(const c of r.costCenters)for(const a of c.accounts)rows.push([c.name_ar,a.code+' '+a.name,money(a.debit),money(a.credit),money(a.debit-a.credit)]);$('#cc-report-out').innerHTML=(rows.length?table(head,rows):'<p>لا توجد حركات في الفترة.</p>')+'<p class="hint">إجمالي مدين '+money(r.totals.debit)+' · دائن '+money(r.totals.credit)+'</p>';}catch(e){showError(e);}};
+ $('#cc-report').onclick=guard(loadReport);
+ await load();
+}
