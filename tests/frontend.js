@@ -24,18 +24,18 @@ function environment(reduced=false, initial={}) {
  context.hooks.S.state={setup_needed:true,user:null,activity:'engineering'};
  return {doc,app,storage,session,location,hooks:context.hooks};
 }
-for(const activity of ['trade']) {
+for(const portal of ['owner','accountant','staff']) {
  const env=environment(false,{'smartz.workspace':'events'});await env.hooks.route();
- const portals=env.doc.querySelectorAll('[data-portal]');assert.equal(portals.length,3);assert.deepEqual(portals.map(p=>p.dataset.portal),['owner','accountant','staff']);
+ const cards=env.doc.querySelectorAll('[data-portal]');assert.deepEqual(cards.map(card=>card.dataset.portal),['owner','accountant','staff']);
  assert.ok(env.app.innerHTML.includes('saas-entry'));assert.ok(!env.doc.querySelector('#go'));
  assert.equal(env.doc.querySelector('.saas-entry').dataset.motion,'on');
  const toggle=env.doc.querySelector('#entry-motion');toggle.onclick();
  assert.equal(env.doc.querySelector('.saas-entry').dataset.motion,'off');
  assert.equal(toggle.getAttribute('aria-pressed'),'false');
  assert.equal(env.storage.get('almuhtariz.motion'),'off');
- portals.find(card=>card.dataset.portal==='owner').onclick();
- assert.equal(env.storage.get('almuhtariz.portal'),'owner');
- assert.equal(env.hooks.S.activitySelected,true);
+ cards.find(card=>card.dataset.portal===portal).onclick();
+ assert.equal(env.storage.get('smartz.workspace'),'trade');
+ assert.equal(env.hooks.S.activitySelected,true); assert.equal(env.storage.get('almuhtariz.portal'),portal);
  assert.ok(env.doc.querySelector('#go'),'Selection must reach the login/setup form');
 }
 const reduced=environment(true);await reduced.hooks.route();assert.equal(reduced.doc.querySelector('.saas-entry').dataset.motion,'off');
@@ -62,4 +62,32 @@ const cashier=environment();cashier.hooks.S.state.user={id:2,username:'عامل'
 cashier.hooks.pages.pos=async()=>{opened++;cashier.hooks.shell('<h1>نقطة البيع</h1>');};
 for(const hash of ['#settings','#reports','#items','#dashboard']){cashier.location.hash=hash;await cashier.hooks.route();assert.equal(cashier.location.hash,'#pos');}
 assert.equal(opened,4);assert.ok(!cashier.app.innerHTML.includes('href="#settings"'));assert.ok(!cashier.app.innerHTML.includes('href="#reports"'));assert.ok(!cashier.app.innerHTML.includes('href="#items"'));assert.equal(cashier.doc.querySelector('#workspace').hidden,true);
+const accountant=environment();
+accountant.hooks.S.state.user={id:3,username:'محاسب',role:'accountant'};
+accountant.hooks.S.activitySelected=true;
+let destination;
+for(const page of ['dashboard','financial','ledger','stocktakes','shifts']){
+ accountant.hooks.pages[page]=async()=>{destination=page;accountant.hooks.shell('<h1>صفحة المحاسب</h1>');};
+}
+for(const page of ['settings','print','sync','compliance','pos']){
+ accountant.hooks.pages[page]=async()=>assert.fail('Restricted page ran: '+page);
+ accountant.location.hash='#'+page;
+ await accountant.hooks.route();
+ assert.equal(destination,'dashboard');
+ assert.equal(accountant.location.hash,'#dashboard');
+ assert.ok(!accountant.app.innerHTML.includes('href="#'+page+'"'));
+}
+for(const page of ['financial','ledger','stocktakes','shifts']){
+ accountant.location.hash='#'+page;
+ await accountant.hooks.route();
+ assert.equal(destination,page);
+}
+const owner=environment();
+owner.hooks.S.state.user={id:1,username:'مالك',role:'owner'};
+owner.hooks.S.activitySelected=true;
+owner.hooks.pages.settings=async()=>owner.hooks.shell('<h1>إدارة المنشأة</h1>');
+owner.location.hash='#settings';await owner.hooks.route();
+assert.ok(owner.app.innerHTML.includes('إدارة المنشأة'));
+assert.ok(owner.app.innerHTML.includes('href="#settings"'));
+
 console.log('نجحت اختبارات إظهار النشاط التجاري فقط وحفظ التفضيل وتعطيل الحركة وتفضيل تقليل الحركة');

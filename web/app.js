@@ -43,11 +43,21 @@ const ICONS = { dashboard:'▦', invoices:'▤', new:'＋', parties:'♙', items
 const NAV = [['dashboard', 'نظرة عامة'], ['invoices', 'المبيعات والفواتير'], ['quotes','عروض الأسعار'], ['new', 'فاتورة جديدة'], ['pos', 'نقطة البيع'], ['parties', 'العملاء والموردون'], ['items', 'الأصناف والخدمات'], ['purchases','المشتريات'], ['vouchers','القبض والصرف'], ['journals','القيود المحاسبية'], ['ledger','دفتر الأستاذ وكشف الطرف'], ['stocktakes','الجرد'], ['shifts','الورديات'], ['sync','ربط السحابة'], ['reports', 'التقارير المالية'], ['compliance','الفوترة والهيئة'], ['print', 'إعدادات الطباعة'], ['settings', 'الإعدادات']];
 const WORKSPACES = { trade: { name:'التجاري والخدمات', subtitle:'أعمالك اليومية، في مكان واحد', item:'صنف أو خدمة' }, events: { name:'الحفلات والمناسبات', subtitle:'فواتير تجهيزاتك وخدمات مناسباتك', item:'تجهيز أو خدمة' }, engineering: { name:'الهندسي والمقاولات', subtitle:'فواتير الأعمال والخدمات الهندسية', item:'بند أعمال أو خدمة' } };
 const visibleWorkspace = key => key === 'trade'; // Temporary commercial-only rollout
+const ACCOUNTANT_PAGES = new Set([
+  'dashboard', 'invoices', 'quotes', 'new', 'parties', 'items', 'purchases',
+  'vouchers', 'journals', 'ledger', 'stocktakes', 'shifts', 'reports', 'financial'
+]);
+const OWNER_PAGES = new Set([...NAV.map(([key]) => key), 'financial']);
+const canOpenLocalPage = (role, key) => {
+  if (role === 'staff') return key === 'pos';
+  if (role === 'accountant') return ACCOUNTANT_PAGES.has(key);
+  return role === 'owner' && OWNER_PAGES.has(key);
+};
 let workspace = 'trade';
 if (!WORKSPACES[workspace]) workspace = 'trade';
 function shell(body) {
   const cur = location.hash.slice(1) || (S.state.user.role === 'staff' ? 'pos' : 'dashboard'), w = WORKSPACES[workspace];
-  $('#app').innerHTML = '<div class="shell"><nav aria-label="القائمة الرئيسية"><a class="brand" href="#pos"><img class="brand-logo" src="/assets/almuhtariz-logo.png" alt="شعار المحترز"><strong dir="rtl">المحترز للمحاسبة<small>وإدارة الأعمال</small></strong></a><div class="workspace-label">مساحة العمل</div><select id="workspace" aria-label="النشاط">' + Object.entries(WORKSPACES).filter(([key])=>visibleWorkspace(key)).map(([k,v])=>'<option value="'+k+'" '+(k===workspace?'selected':'')+'>'+v.name+'</option>').join('') + '</select><div class="nav-label">إدارة الأعمال</div>'+NAV.filter(([k]) => S.state.user.role==='staff' ? k==='pos' : (!['settings','print','compliance','sync'].includes(k) || S.state.user.role === 'owner')).map(([k,t])=>'<a class="'+(cur===k?'on':'')+'" href="#'+k+'" '+(cur===k?'aria-current="page"':'')+'><span class="nav-icon" aria-hidden="true">'+ICONS[k]+'</span>'+t+'</a>').join('')+'<div class="nav-bottom"><div class="profile"><span class="avatar">'+esc(S.state.user.username.slice(0,1))+'</span><div><b>'+esc(S.state.user.username)+'</b><small>'+({owner:'مالك المنشأة',accountant:'محاسب',staff:'موظف'}[S.state.user.role]||'')+'</small></div><button id="out" aria-label="تسجيل الخروج">↪</button></div></div></nav><main><header class="topbar"><div><span class="eyebrow">'+esc(w.name)+'</span><span class="top-divider">/</span><span>'+esc(NAV.find(([k])=>k===cur)?.[1]||'نظرة عامة')+'</span></div><div class="top-actions"><span class="today">'+fdate(S.state.today)+'</span><a class="button p" href="#new">＋ فاتورة جديدة</a></div></header><div class="content"><div id="msg" class="msg" role="status" hidden></div><div class="development-notice">نسخة تطوير · المستندات تجريبية وغير صالحة للاستخدام الضريبي</div>'+body+'</div><footer class="app-footer"><span dir="rtl">المحترز للمحاسبة</span><span>تفاصيل أقل. وضوح أكثر.</span></footer></main></div>';
+  $('#app').innerHTML = '<div class="shell"><nav aria-label="القائمة الرئيسية"><a class="brand" href="#'+(S.state.user.role==='staff'?'pos':'dashboard')+'"><img class="brand-logo" src="/assets/almuhtariz-logo.png" alt="شعار المحترز"><strong dir="rtl">المحترز للمحاسبة<small>وإدارة الأعمال</small></strong></a><div class="workspace-label">مساحة العمل</div><select id="workspace" aria-label="النشاط">' + Object.entries(WORKSPACES).filter(([key])=>visibleWorkspace(key)).map(([k,v])=>'<option value="'+k+'" '+(k===workspace?'selected':'')+'>'+v.name+'</option>').join('') + '</select><div class="nav-label">إدارة الأعمال</div>'+NAV.filter(([k]) => canOpenLocalPage(S.state.user.role, k)).map(([k,t])=>'<a class="'+(cur===k?'on':'')+'" href="#'+k+'" '+(cur===k?'aria-current="page"':'')+'><span class="nav-icon" aria-hidden="true">'+ICONS[k]+'</span>'+t+'</a>').join('')+'<div class="nav-bottom"><div class="profile"><span class="avatar">'+esc(S.state.user.username.slice(0,1))+'</span><div><b>'+esc(S.state.user.username)+'</b><small>'+({owner:'مالك المنشأة',accountant:'محاسب',staff:'موظف'}[S.state.user.role]||'')+'</small></div><button id="out" aria-label="تسجيل الخروج">↪</button></div></div></nav><main><header class="topbar"><div><span class="eyebrow">'+esc(w.name)+'</span><span class="top-divider">/</span><span>'+esc(NAV.find(([k])=>k===cur)?.[1]||'نظرة عامة')+'</span></div><div class="top-actions"><span class="today">'+fdate(S.state.today)+'</span><a class="button p" href="#new">＋ فاتورة جديدة</a></div></header><div class="content"><div id="msg" class="msg" role="status" hidden></div><div class="development-notice">نسخة تطوير · المستندات تجريبية وغير صالحة للاستخدام الضريبي</div>'+body+'</div><footer class="app-footer"><span dir="rtl">المحترز للمحاسبة</span><span>تفاصيل أقل. وضوح أكثر.</span></footer></main></div>';
   if(S.state.user.role==='staff'){$('#workspace').hidden=true;$('.workspace-label').hidden=true;$('.top-actions .button').href='#pos';$('.top-actions .button').textContent='نقطة البيع';}
   $('#workspace').onchange = e => { workspace=visibleWorkspace(e.target.value)?e.target.value:'trade';localStorage.setItem('smartz.workspace',workspace); route(); };
   $('#out').onclick = guard(async () => { await api('logout', { method: 'POST', body: {} }); await globalThis.AlmuhtarizStore?.clearScope(localScope()); location.reload(); });
@@ -455,7 +465,20 @@ async function reviewInvoice(total, count) {
 async function route() {
  if(S.state.mode==='cloud' && S.state.user){const cloud=await import('./cloud-workspace.js');return cloud.renderCloudWorkspace(S.state,api);}
  if(S.state?.user?.role==='staff'){workspace='trade';S.activitySelected=true;if(location.hash!=='#pos')history.replaceState(null,'','#pos');}
- if (!S.introComplete && sessionStorage.almuhtarizOpened!=='1') return openingScreen(); if (!S.activitySelected) return activityScreen(); if (!S.state.user) return authScreen(); const k = (location.hash.slice(1) || (S.state.user.role === 'staff' ? 'pos' : 'dashboard')); try { await (pages[k] || pages.dashboard)(); } catch (e) { shell(`<div class="msg">${esc(e.message)}</div>`); } }
+ if (!S.introComplete && sessionStorage.almuhtarizOpened !== '1') return openingScreen();
+ if (!S.activitySelected) return activityScreen();
+ if (!S.state.user) return authScreen();
+ const role = S.state.user.role;
+ const fallback = role === 'staff' ? 'pos' : 'dashboard';
+ const requested = location.hash.slice(1);
+ const page = canOpenLocalPage(role, requested) ? requested : fallback;
+ if (requested && requested !== page) history.replaceState(null, '', '#' + page);
+ try {
+   await pages[page]();
+ } catch (error) {
+   shell(`<div class="msg">${esc(error.message)}</div>`);
+ }
+}
 (async () => {
   S.state = await api('state');
   if (visibleWorkspace(S.state.activity)) workspace=S.state.activity;
