@@ -306,7 +306,7 @@ export function createApp({ dbFile, licensePath, tls }) {
   }, { owner: true });
 
   // ---------- المعالج العام ----------
-  const server = http.createServer(async (req, res) => {
+  const handler = async (req, res) => {
     const send = (st, body, type = 'application/json', h = {}) => { res.writeHead(st, { 'Content-Type': type, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', ...h }); res.end(body); };
     try {
       const access = localAccess(req);
@@ -348,7 +348,8 @@ export function createApp({ dbFile, licensePath, tls }) {
       const st = e.status || 400;
       send(st, JSON.stringify({ error: st >= 500 ? 'خطأ داخلي' : e.message }));
     }
-  });
+  };
+  const server = tls ? https.createServer(tls, handler) : http.createServer(handler);
   const syncTimer=setInterval(()=>{try{if(syncInfo(db).enabled)syncBranch(db).catch(()=>{});}catch{}},60000);syncTimer.unref();
   // Automatic nightly backup at 03:00 Riyadh time.
   let lastBackupDate='';
@@ -381,13 +382,23 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const certPath = process.env.ALMUHTARIZ_TLS_CERT, keyPath = process.env.ALMUHTARIZ_TLS_KEY;
   if (Boolean(certPath) !== Boolean(keyPath)) throw Error('يلزم تحديد مسار الشهادة ومفتاحها معًا');
   const tls = certPath ? {cert:fs.readFileSync(certPath), key:fs.readFileSync(keyPath), minVersion:'TLSv1.2'} : undefined;
-  const port = Number(process.env.PORT || 3000), host = process.env.HOST || (tls ? '0.0.0.0' : '127.0.0.1');
-  if (!tls && !isLoopback(host)) throw Error('تشغيل الفرع على الشبكة يتطلب شهادة HTTPS موثوقة');
-  const { server } = createApp({ dbFile: path.join(data, 'smartz.db'), licensePath: path.join(data, 'license.json'), tls });
-  server.listen(port, host, () => {
-    console.log(`\nالمحترز للمحاسبة يعمل. افتح من هذا الجهاز: ${tls ? 'https' : 'http'}://localhost:${port}`);
-    if (tls && !isLoopback(host)) {
+  const port = Number(process.env.PORT || 3000);
+  const servers = [];
+  // خادم HTTPS على جميعinand واجهات الشبكة للوصول من أجهزة LAN
+  if (tls) {
+    const { server: httpsServer } = createApp({ dbFile: path.join(data, 'smartz.db'), licensePath: path.join(data, 'license.json'), tls });
+    httpsServer.listen(port, '0.0.0.0', () => {
+      console.log(`\nالمحترز للمحاسبة يعمل على HTTPS.`);
       for (const l of Object.values(os.networkInterfaces()).flat()) if (l.family === 'IPv4' && !l.internal) console.log(`عنوان الشبكة: https://${l.address}:${port} (استخدم الاسم أو العنوان المشمول في الشهادة)`);
-    }
+    });
+    servers.push(httpsServer);
+  }
+  // خادم HTTP فقط على localhost للجهاز الرئيسي
+  const { server: httpServer } = createApp({ dbFile: path.join(data, 'smartz.db'), licensePath: path.join(data, 'license.json'), tls: undefined });
+  httpServer.listen(port + 1, '127.0.0.1', () => {
+    console.log(`المحترز للمحاسبة يعمل على HTTP (محلي فقط): http://127.0.0.1:${port + 1}`);
   });
+  servers.push(httpServer);
+  process.on('SIGTERM', () => { for (const s of servers) s.close(); });
+  process.on('SIGINT', () => { for (const s of servers) s.close(); });
 }
