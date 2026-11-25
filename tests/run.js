@@ -1,4 +1,5 @@
-﻿await import('./test.js');
+﻿await import('./encoding.js');
+await import('./test.js');
 await import('./safety.js');
 await import('./frontend.js');
 await import('./pos.js');
