@@ -1,4 +1,4 @@
-await import('./test.js');
+﻿await import('./test.js');
 await import('./safety.js');
 await import('./frontend.js');
 await import('./pos.js');
@@ -23,3 +23,5 @@ await import('./tracking.js');
 await import('./transaction-overlap.js');
 await import('./sync-failure.js');
 await import('./sign-endpoint.js');
+await import('./portal-login.js');
+
