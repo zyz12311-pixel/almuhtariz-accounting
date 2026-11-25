@@ -26,5 +26,6 @@ await import('./sign-endpoint.js');
 await import('./portal-login.js');
 await import('./pos-manual-pricing.js');
 await import('./due-aging.js');
+await import('./cost-centers.js');
 
 

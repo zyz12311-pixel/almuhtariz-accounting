@@ -6,6 +6,7 @@ import {trialBalance,vatReport} from './core.js';
 import {stockValuation} from './valuation.js';
 import {accountLedger} from './ledger-report.js';
 import {agingReport} from './aging.js';
+import {costCenterReport} from './cost-centers.js';
 let db;
 try{
  db=new DatabaseSync(workerData.file,{readOnly:true});db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
@@ -14,7 +15,7 @@ try{
   const valid=verifyAudit(db);db.exec('COMMIT');parentPort.postMessage({valid,tip,checked_at:new Date().toISOString()});
  }else if(workerData.operation==='report'){
   db.exec('BEGIN');const {kind,from,to}=workerData;
-  const result=kind==='financial'?financialReport(db,from,to):kind==='trial'?trialBalance(db):kind==='vat'?vatReport(db,from,to):kind==='valuation'?stockValuation(db):kind==='ledger'?accountLedger(db,{...workerData.query,from,to}):kind==='aging'?agingReport(db,from,to):null;if(result===null)throw Error('تقرير غير معروف');db.exec('COMMIT');parentPort.postMessage({result});
+  const result=kind==='financial'?financialReport(db,from,to):kind==='trial'?trialBalance(db):kind==='vat'?vatReport(db,from,to):kind==='valuation'?stockValuation(db):kind==='ledger'?accountLedger(db,{...workerData.query,from,to}):kind==='aging'?agingReport(db,from,to):kind==='cost-centers'?costCenterReport(db,from,to,workerData.query?.cost_center_id):null;if(result===null)throw Error('تقرير غير معروف');db.exec('COMMIT');parentPort.postMessage({result});
  }else if(workerData.operation==='backup'){
   db.prepare('VACUUM INTO ?').run(workerData.destination);
   const copy=new DatabaseSync(workerData.destination,{readOnly:true});

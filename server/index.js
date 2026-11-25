@@ -36,6 +36,7 @@ import {commercialList,shiftList,complianceList,posHistoryList} from './lists.js
 import {traceList} from './tracking.js';
 import {correctLegacyCost} from './cost-correction.js';
 import {allocateVoucher,voucherDetails,outstandingDocuments,reverseManualJournal} from './settlements.js';
+import {listCostCenters,createCostCenter,updateCostCenter,deleteCostCenter,costCenterReport} from './cost-centers.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.join(here, '..', 'web');
@@ -257,6 +258,10 @@ export function createApp({ dbFile, licensePath, tls }) {
   route('GET', '/api/invoices/:id', ({ params,user }) => { const i = getInvoice(db, params.id); need(i, 'غير موجودة'); if(user.role==='staff'&&Number(i.created_by)!==user.id)throw new HttpError(403,'يمكنك عرض مبيعاتك فقط');return i; },{cashier:true});
   route('POST', '/api/invoices/:id/issue', ({ params }) => ({ id: issueInvoice(db, Number(params.id)) }));
   route('POST', '/api/invoices/:id/credit-note', ({ params, body, user }) => ({ id: createCreditNote(db, user.id, Number(params.id), body) }), { accountant: true });
+  route('GET', '/api/cost-centers', () => listCostCenters(db), { accountant: true });
+  route('POST', '/api/cost-centers', ({ body, user }) => createCostCenter(db, body), { accountant: true });
+  route('PUT', '/api/cost-centers/:id', ({ params, body }) => updateCostCenter(db, Number(params.id), body), { accountant: true });
+  route('DELETE', '/api/cost-centers/:id', ({ params }) => deleteCostCenter(db, Number(params.id)), { owner: true });
   route('GET', '/api/invoices/:id/html', ({ params, query, user }) => { const i = getInvoice(db, params.id); need(i, 'غير موجودة');
     if(user.role==='staff'&&(Number(i.created_by)!==user.id||(query.profile&&query.profile!=='pos')))throw new HttpError(403,'يمكنك طباعة مبيعاتك بقالب نقطة البيع فقط');
     return new Raw(renderInvoice({ inv: i, company: i.company_snapshot || getSetting(db, 'company'), s: validatePrintSettings({}, getSetting(db, profileKey(query.profile || (user.role==='staff'?'pos':'accountant')))) })); },{cashier:true});
@@ -309,6 +314,7 @@ export function createApp({ dbFile, licensePath, tls }) {
   route('GET', '/api/reports/trial-balance', () => jobs.report('trial'), { accountant: true });
   route('GET','/api/reports/financial',({query})=>{validDate(query.from);validDate(query.to);return jobs.report('financial',query.from,query.to);},{accountant:true});
   route('GET','/api/reports/aging',({query})=>{const asOf=validDate(query.as_of||nowRiyadh().date,{allowFuture:true});const kind=query.kind==='supplier'?'supplier':'customer';return jobs.report('aging',asOf,kind);},{accountant:true});
+  route('GET','/api/reports/cost-centers',({query})=>{const from=validDate(query.from);const to=validDate(query.to);return jobs.report('cost-centers',from,to,query);},{accountant:true});
   route('GET', '/api/reports/vat', ({ query }) => { need(/^\d{4}-\d{2}-\d{2}$/.test(query.from || '') && /^\d{4}-\d{2}-\d{2}$/.test(query.to || ''), 'حدد الفترة (from/to بصيغة YYYY-MM-DD)'); return jobs.report('vat',query.from,query.to); }, { accountant: true });
   route('GET','/api/compliance/audit/verify',()=>jobs.audit(),{owner:true});
   route('GET', '/api/backup', async () => new FileRaw(await jobs.backup(), { 'Content-Disposition': `attachment; filename="almuhtariz-backup-${new Date().toISOString().slice(0,10)}.db"` }), { owner: true });

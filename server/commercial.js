@@ -61,15 +61,15 @@ export function createPurchase(db,actor,body){return tx(db,()=>{
  });
  const subtotal=addSafe(lines.map(l=>l.net)),vat=addSafe(lines.map(l=>l.vat)),total=addSafe([subtotal,vat]);if(!total)throw Error('قيمة الشراء يجب أن تكون أكبر من صفر');
  const number=(returning?'PR-':'PU-')+String(nextCounter(db,'purchase')).padStart(6,'0');
- const id=Number(db.prepare('INSERT INTO purchases(uuid,number,kind,supplier_id,supplier_reference,document_date,due_date,payment_terms_days,warehouse_id,payment,ref_purchase_id,subtotal,vat,total,reason,notes,created_by,request_id,request_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(crypto.randomUUID(),number,returning?'return':'purchase',supplier.id,reference,date,dueDate,paymentTermsDays,warehouse,payment,original?.id||null,subtotal,vat,total,reason,notes,actor,rec.request,rec.hash).lastInsertRowid);
+  const id=Number(db.prepare('INSERT INTO purchases(uuid,number,kind,supplier_id,supplier_reference,document_date,due_date,payment_terms_days,warehouse_id,payment,ref_purchase_id,subtotal,vat,total,reason,notes,created_by,request_id,request_hash,cost_center_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(crypto.randomUUID(),number,returning?'return':'purchase',supplier.id,reference,date,dueDate,paymentTermsDays,warehouse,payment,original?.id||null,subtotal,vat,total,reason,notes,actor,rec.request,rec.hash,body.cost_center_id||null).lastInsertRowid);
  db.prepare('INSERT INTO purchase_snapshots(purchase_id,supplier) VALUES(?,?)').run(id,JSON.stringify(supplier));
  for(const l of lines){db.prepare('INSERT INTO purchase_lines(purchase_id,line_no,item_id,description,qty_micro,unit_price,vat_rate,net,vat,unit_name,unit_factor_micro,stock_qty_micro,account_code,tracking_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,l.line_no,l.item_id,l.description,l.qty_micro,l.unit_price,l.vat_rate,l.net,l.vat,l.unit_name,l.unit_factor_micro,l.stock_qty_micro,l.account_code,JSON.stringify(l.tracking||[]));
   if(l.stock_qty_micro){const originalMovement=returning?db.prepare('SELECT id FROM stock_movements WHERE purchase_id=? AND line_no=?').get(original.id,l.line_no):null;const movement=insertStockMovement(db,{event_id:'purchase:'+id+':'+l.line_no,request_hash:rec.hash,item_id:l.item_id,warehouse_id:warehouse,delta_micro:(returning?-1:1)*l.stock_qty_micro,kind:returning?'issue':'receipt',purchase_id:id,line_no:l.line_no,reason:number,actor_id:actor},{tracking:l.tracking,originalMovementId:originalMovement?.id||null});l.stock_value=valueMovement(db,movement,{value:l.net}).value;}
  }
- const settlement={cash:'1101',bank:'1102',credit:'2101'}[payment],entries=lines.filter(l=>l.net||l.stock_value).map(l=>({account:l.account_code,[returning?'credit':'debit']:returning&&l.stock_qty_micro?l.stock_value:l.net}));
- if(returning){const difference=lines.filter(l=>l.stock_qty_micro).reduce((s,l)=>s+l.net-l.stock_value,0);if(difference)entries.push({account:'5298',[difference>0?'credit':'debit']:Math.abs(difference)});}
- if(vat)entries.push({account:'1301',[returning?'credit':'debit']:vat});
- entries.push({account:settlement,[returning?'debit':'credit']:total,...(payment==='credit'?{party_id:supplier.id}:{})});
+  const settlement={cash:'1101',bank:'1102',credit:'2101'}[payment],cc=body.cost_center_id||null,entries=lines.filter(l=>l.net||l.stock_value).map(l=>({account:l.account_code,[returning?'credit':'debit']:returning&&l.stock_qty_micro?l.stock_value:l.net,cost_center_id:cc}));
+  if(returning){const difference=lines.filter(l=>l.stock_qty_micro).reduce((s,l)=>s+l.net-l.stock_value,0);if(difference)entries.push({account:'5298',[difference>0?'credit':'debit']:Math.abs(difference),cost_center_id:cc});}
+  if(vat)entries.push({account:'1301',[returning?'credit':'debit']:vat,cost_center_id:cc});
+  entries.push({account:settlement,[returning?'debit':'credit']:total,cost_center_id:cc,...(payment==='credit'?{party_id:supplier.id}:{})});
  postEntry(db,{date,description:(returning?'مرتجع شراء ':'شراء ')+number,source_type:'purchase',source_id:id,branch_id:1,lines:entries});
  appendAudit(db,{actor,event:returning?'purchase.returned':'purchase.posted',entity_type:'purchase',entity_id:id,details:{number,total}});
  return{id,replayed:false};
@@ -87,9 +87,9 @@ export function createVoucher(db,actor,body){return tx(db,()=>{
  if(!amount||!['1101','1102'].includes(cash))throw Error('المبلغ أو حساب الصندوق غير صالح');
  const due=(receiving?1:-1)*partyBalance(db,person.id,control);
  if(amount>due)throw Error('السند يتجاوز الرصيد المستحق للطرف');
- const number=(receiving?'RC-':'PY-')+String(nextCounter(db,'voucher')).padStart(6,'0'),notes=text(body.notes,500,'البيان',true);
- const journal=postEntry(db,{date,description:number+' '+notes,source_type:'voucher',branch_id:1,lines:[{account:cash,[receiving?'debit':'credit']:amount},{account:control,party_id:person.id,[receiving?'credit':'debit']:amount}]});
- const id=Number(db.prepare('INSERT INTO cash_vouchers(number,kind,party_id,voucher_date,amount,cash_account,notes,created_by,request_id,request_hash,journal_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(number,body.kind,person.id,date,amount,cash,notes,actor,rec.request,rec.hash,journal).lastInsertRowid);
+  const number=(receiving?'RC-':'PY-')+String(nextCounter(db,'voucher')).padStart(6,'0'),notes=text(body.notes,500,'البيان',true),cc=body.cost_center_id||null;
+  const journal=postEntry(db,{date,description:number+' '+notes,source_type:'voucher',branch_id:1,cost_center_id:cc,lines:[{account:cash,[receiving?'debit':'credit']:amount,cost_center_id:cc},{account:control,party_id:person.id,[receiving?'credit':'debit']:amount,cost_center_id:cc}]});
+  const id=Number(db.prepare('INSERT INTO cash_vouchers(number,kind,party_id,voucher_date,amount,cash_account,notes,created_by,request_id,request_hash,journal_id,cost_center_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(number,body.kind,person.id,date,amount,cash,notes,actor,rec.request,rec.hash,journal,cc).lastInsertRowid);
  db.prepare('INSERT INTO voucher_context(voucher_id,party_account,party_snapshot) VALUES(?,?,?)').run(id,control,JSON.stringify(person));
  if(body.allocations===undefined)autoAllocateVoucher(db,actor,id,rec.request);else if(!Array.isArray(body.allocations)||body.allocations.length)allocateVoucher(db,actor,id,{request_id:rec.request,allocations:body.allocations});
  appendAudit(db,{actor,event:'voucher.posted',entity_type:'voucher',entity_id:id,details:{number,amount}});return{id,replayed:false};
@@ -98,7 +98,7 @@ export function postManualJournal(db,actor,body){return tx(db,()=>{
  const rec=receipt(db,'manual_journal_requests',body,actor);if(rec.old)return{id:rec.old.id,replayed:true};
  const date=validDate(body.date),description=text(body.description,500,'بيان القيد',true);
  if(!Array.isArray(body.lines)||body.lines.length<2||body.lines.length>100)throw Error('القيد يحتاج من 2 إلى 100 سطر');
- const lines=body.lines.map(l=>{const account=String(l.account),debit=money(l.debit||0),credit=money(l.credit||0);if(account==='1401')throw Error('استخدم مستند المخزون لتعديل حساب المخزون والمحافظة على المطابقة');if((debit&&credit)||(!debit&&!credit))throw Error('اختر مدينًا أو دائنًا لكل سطر');const control=['1201','2101'].includes(account);if(control&&!l.party_id)throw Error('حساب العميل أو المورد يحتاج تحديد الطرف');if(l.party_id)party(db,l.party_id,account==='2101'?'supplier':'customer');return{account,debit,credit,party_id:control?identifier(l.party_id):null};});
+  const lines=body.lines.map(l=>{const account=String(l.account),debit=money(l.debit||0),credit=money(l.credit||0);if(account==='1401')throw Error('استخدم مستند المخزون لتعديل حساب المخزون والمحافظة على المطابقة');if((debit&&credit)||(!debit&&!credit))throw Error('اختر مدينًا أو دائنًا لكل سطر');const control=['1201','2101'].includes(account);if(control&&!l.party_id)throw Error('حساب العميل أو المورد يحتاج تحديد الطرف');if(l.party_id)party(db,l.party_id,account==='2101'?'supplier':'customer');return{account,debit,credit,party_id:control?identifier(l.party_id):null,cost_center_id:l.cost_center_id||null};});
  const id=postEntry(db,{date,description,source_type:'manual',branch_id:1,lines});db.prepare('INSERT INTO manual_journal_requests(request_id,request_hash,id) VALUES(?,?,?)').run(rec.request,rec.hash,id);appendAudit(db,{actor,event:'journal.manual',entity_type:'journal',entity_id:id,details:{description}});return{id,replayed:false};
 });}
 export function financialReport(db,from,to){
