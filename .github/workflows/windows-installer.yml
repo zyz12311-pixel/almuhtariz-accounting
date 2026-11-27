@@ -1,0 +1,68 @@
+name: Windows installer
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+      - run: npm ci
+      - run: npm run build:zatca-deps
+      - shell: pwsh
+        run: |
+          & ./tools/build-zatca-xmlsec.ps1 -JavaHome $env:JAVA_HOME
+          $stage = New-Item -ItemType Directory -Force installer-stage
+          foreach ($dir in @('server','web','node_modules','tools')) {
+            Copy-Item $dir $stage.FullName -Recurse
+          }
+          Copy-Item package.json,package-lock.json,installer/start.cmd $stage.FullName
+          $runtime = New-Item -ItemType Directory -Force "$stage/runtime"
+          Copy-Item (Get-Command node.exe).Source "$runtime/node.exe"
+          Copy-Item $env:JAVA_HOME "$runtime/java" -Recurse
+          if (!(Test-Path "$runtime/java/bin/java.exe")) { throw 'Missing bundled Java' }
+          if (Get-ChildItem $stage -Recurse -File -Include '*.pfx','*.p12','*.db','*.key','credentials*.json','csid*.json','zatca-einvoicing-sdk-*.jar') { throw 'Unexpected sensitive or SDK file in package' }
+      - shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) { choco install innosetup -y --no-progress; if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed' } }
+          & $iscc installer/setup.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
+      - shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP 'Almuhtariz-install-test'
+          $p = Start-Process dist/Al-Muhtariz-Accounting-Setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=$target" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Installer exit $($p.ExitCode)" }
+          $env:ALMUHTARIZ_DATA = Join-Path $env:RUNNER_TEMP 'Almuhtariz-test-data'
+          $env:ZATCA_JAVA = "$target/runtime/java/bin/java.exe"
+          $env:ZATCA_XMLSEC_HELPER_DIR = "$target/server/zatca/java/build"
+          $env:ZATCA_XMLSEC_CLASSPATH = (Get-ChildItem "$target/tools/zatca-lib" -Filter '*.jar').FullName -join ';'
+          $env:PORT = '19300'
+          $cp = "$env:ZATCA_XMLSEC_HELPER_DIR;$env:ZATCA_XMLSEC_CLASSPATH"
+          '<root b="2" a="1"/>' | & $env:ZATCA_JAVA -cp $cp C14n11 subtree
+          if ($LASTEXITCODE -ne 0) { throw 'Installed Java smoke test failed' }
+          $server = Start-Process "$target/runtime/node.exe" -ArgumentList '--no-warnings',"$target/server/index.js" -WorkingDirectory $target -PassThru
+          try {
+            $ok = $false
+            for ($i=0; $i -lt 30; $i++) {
+              try { $response = Invoke-WebRequest http://127.0.0.1:19301/ -TimeoutSec 3; if ($response.StatusCode -eq 200) { $ok=$true; break } } catch {}
+              Start-Sleep -Seconds 1
+            }
+            if (!$ok -or !(Test-Path "$env:ALMUHTARIZ_DATA/smartz.db")) { throw 'Installed application failed startup' }
+          } finally { Stop-Process -Id $server.Id -ErrorAction SilentlyContinue }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Al-Muhtariz-Accounting-unsigned-test-installer
+          path: dist/Al-Muhtariz-Accounting-Setup.exe
+          if-no-files-found: error
