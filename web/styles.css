@@ -69,3 +69,31 @@ nav{width:250px;padding:28px 18px;display:flex;flex-direction:column;border-inli
 .commercial-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:16px;margin-bottom:20px}
 .shell>nav>a,.shell>nav>.brand,.shell>nav>.nav-bottom{flex-shrink:0}
 @media(min-width:801px){.shell>nav{overflow-y:auto;overscroll-behavior:contain}.shell>nav>a:not(.brand){min-height:44px}}
+[dir=rtl] .compliance-heading{direction:rtl}
+.compliance-alert{display:flex;gap:12px;align-items:center;padding:16px 18px;margin-bottom:16px;border:1px solid #efd89c;border-radius:var(--r);background:#fff8e7;color:#775d1c;font-size:13px}
+.compliance-alert strong{white-space:nowrap}
+.compliance-metrics{grid-template-columns:repeat(auto-fit,minmax(170px,1fr));margin-bottom:16px}
+.compliance-metric{display:flex;flex-direction:column;gap:10px;margin:0}
+.compliance-metric>span,.compliance-metric small{color:var(--mut);font-size:12px}
+.compliance-metric strong{font-size:25px;color:var(--tx)}
+.compliance-two{grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch}
+.compliance-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:16px 0}
+.compliance-facts div{padding:12px;border:1px solid var(--bd);border-radius:8px}
+.compliance-facts dt{color:var(--mut);font-size:11px}
+.compliance-facts dd{margin:8px 0 0;font-weight:600;overflow-wrap:anywhere}
+.compliance-issuer-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;align-items:end;margin-top:18px}
+.compliance-issuer-form label{display:grid;gap:6px;color:var(--mut);font-size:12px}
+.compliance-issuer-form input,.compliance-issuer-form select{min-width:0}
+.compliance-issuer-form button,.compliance-issuer-form p{grid-column:1/-1}
+.compliance-actions{display:flex;gap:8px;flex-wrap:wrap}
+.compliance-score{font-size:24px;color:var(--accent);white-space:nowrap}
+.compliance-substatus{display:block;color:var(--mut);margin-top:5px}
+.compliance-failed{background:#fde9e7;color:#b42318}
+.compliance-errors{color:#b42318}
+.compliance-ok{color:#227348}
+.compliance-response{max-width:520px;max-height:220px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px}
+.compliance-retry{display:block;margin-top:8px}
+[data-theme=dark] .compliance-alert{background:#40371f;border-color:#675728;color:#f0d992}
+[data-theme=dark] .compliance-failed{background:#4b2827;color:#ffc4bd}
+[data-theme=dark] .compliance-ok{color:#95d8ad}
+@media(max-width:700px){.compliance-two{grid-template-columns:1fr}.compliance-issuer-form{grid-template-columns:1fr}.compliance-alert{align-items:flex-start;flex-direction:column}}

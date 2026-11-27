@@ -3,6 +3,7 @@ tools/private.pem
 node_modules/
 .wrangler/
 releases/
+server/zatca/java/build/
 *.db
 *.db-wal
 *.db-shm

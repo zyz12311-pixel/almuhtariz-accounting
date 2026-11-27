@@ -8,7 +8,7 @@ ALTER TABLE parties ADD COLUMN country_code TEXT NOT NULL DEFAULT 'SA';
 ALTER TABLE parties ADD COLUMN id_scheme TEXT NOT NULL DEFAULT '';
 ALTER TABLE parties ADD COLUMN id_number TEXT NOT NULL DEFAULT '';
 ALTER TABLE invoices ADD COLUMN invoice_kind TEXT NOT NULL DEFAULT 'simplified' CHECK(invoice_kind IN ('standard','simplified'));
-ALTER TABLE invoices ADD COLUMN document_code TEXT NOT NULL DEFAULT '388' CHECK(document_code IN ('388','381','383'));
+ALTER TABLE invoices ADD COLUMN document_code TEXT NOT NULL DEFAULT '388' CHECK(document_code IN ('388','381','383','389'));
 ALTER TABLE invoices ADD COLUMN supply_date TEXT;
 ALTER TABLE invoices ADD COLUMN environment TEXT NOT NULL DEFAULT 'legacy' CHECK(environment IN ('legacy','development','simulation','production'));
 ALTER TABLE invoice_lines ADD COLUMN tax_category TEXT NOT NULL DEFAULT 'S' CHECK(tax_category IN ('S','Z','E','O'));

@@ -16,6 +16,8 @@ try{
   const before=db.prepare('SELECT * FROM items').all();
   const run=()=>spawnSync(process.execPath,['--no-warnings',path.join(root,'tools/backup-local.js')],{env:{...process.env,ALMUHTARIZ_DATA:data,ALMUHTARIZ_BACKUPS:backups},encoding:'utf8'});
   const result=run();assert.equal(result.status,0,result.stderr);
+  assert.match(result.stdout,/قاعدة البيانات فقط ولا تتضمن مخزن DPAPI/);
+  assert.match(result.stdout,/المضيف نفسه والحساب نفسه/);
   const first=fs.readdirSync(backups).filter(f=>f.endsWith('.db'));assert.equal(first.length,1);
   const snapshot=new DatabaseSync(path.join(backups,first[0]),{readOnly:true});
   try{assert.deepEqual(snapshot.prepare('SELECT * FROM items').all(),before);assert.equal(snapshot.prepare('PRAGMA integrity_check').get().integrity_check,'ok');}finally{snapshot.close();}

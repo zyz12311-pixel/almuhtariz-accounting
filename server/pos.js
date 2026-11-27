@@ -129,7 +129,7 @@ export function createPosSale(db,user,body) {
  return tx(db,()=>{
   const previous=db.prepare('SELECT * FROM pos_sale_requests WHERE request_id=?').get(key);
   if(previous){if(previous.user_id!==user.id){const e=Error('طلب بيع يخص مستخدمًا آخر');e.status=403;throw e;}if(previous.request_hash!==hash){const e=Error('هذا الطلب سبق إصداره ببيانات مختلفة؛ ابدأ سلة جديدة');e.status=409;throw e;}return previous.invoice_id;}
-  const sale=canonicalPosSale(db,user,body),shift=activeShift(db,user,sale.pos_id),id=createInvoice(db,user.id,sale);
+  const sale=canonicalPosSale(db,user,body),shift=activeShift(db,user,sale.pos_id),id=createInvoice(db,user.id,{...sale,draft:body.deferIssue===true});
   if(shift)db.prepare('INSERT INTO pos_shift_invoices(invoice_id,shift_id) VALUES(?,?)').run(id,shift.id);
   const adjusted=request.lines.filter(line=>line.discount||line.override!==undefined||line.scale_code)
    .map(({tracking,...line})=>line);

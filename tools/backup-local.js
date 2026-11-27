@@ -20,5 +20,5 @@ try{
   const rows=copy.prepare('PRAGMA integrity_check').all();
   if(rows.length!==1||rows[0].integrity_check!=='ok')throw Error('لم تجتز النسخة فحص سلامة SQLite؛ لا تعتمد عليها.');
   console.log('تم حفظ نسخة SQLite وفحص سلامتها: '+target);
-  console.log('النسخة تشمل قاعدة البيانات فقط. احفظ ملف الترخيص ومفاتيح التوقيع مستقبلًا ضمن خطة النسخ الخاصة بها.');
+  console.log('النسخة تشمل قاعدة البيانات فقط ولا تتضمن مخزن DPAPI. استعادة المفاتيح تتطلب نسخة Windows محمية لحساب الخدمة وملف DPAPI على المضيف نفسه والحساب نفسه.');
 }finally{copy.close();}

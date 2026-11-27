@@ -6,12 +6,21 @@
   "engines": {
     "node": ">=22.13"
   },
+  "dependencies": {
+    "asn1js": "4.1.0",
+    "@xmldom/xmldom": "0.9.12",
+    "xadesjs": "3.1.0",
+    "xmldsigjs": "3.1.0",
+    "xpath": "0.0.35"
+  },
   "scripts": {
     "start": "node --no-warnings server/index.js",
     "test": "node --no-warnings tests/run.js",
     "license:keygen": "node tools/make-license.js keygen",
     "license:sign": "node tools/make-license.js sign",
     "test:safety": "node --no-warnings tests/safety.js",
+    "build:zatca-xmlsec": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-zatca-xmlsec.ps1",
+    "test:zatca-c14n-sdk": "node --no-warnings tests/zatca-c14n-sdk.js",
     "init:local": "node --no-warnings tools/init-local.js",
     "compliance:samples": "node --no-warnings tools/generate-compliance-samples.js",
     "compliance:sdk": "node tools/run-official-sdk.js"

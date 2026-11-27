@@ -35,6 +35,7 @@ export function shiftList(db,user,query={}){
 export function complianceList(db,kind,query={}){
  const p=pageQuery(query);
  if(kind==='queue')return paged(db,{select:'q.*,i.number,i.invoice_kind,i.environment',from:'regulatory_queue q JOIN invoices i ON i.id=q.invoice_id',where:search(['i.number','q.state','q.last_error']),params:[p.like,p.like,p.like],order:'i.id DESC'},query);
+ if(kind==='attempts')return paged(db,{select:'a.id,a.invoice_id,i.number,q.operation,a.started_at,a.finished_at,a.outcome,a.response_code,a.response_summary',from:'regulatory_attempts a JOIN invoices i ON i.id=a.invoice_id JOIN regulatory_queue q ON q.invoice_id=a.invoice_id',where:search(['i.number','a.outcome','a.response_summary']),params:[p.like,p.like,p.like],order:'a.id DESC'},query);
  if(kind==='audit')return paged(db,{select:'a.id,a.actor_id,a.event,a.entity_type,a.entity_id,a.hash,a.created_at',from:'audit_events a',where:search(['a.event','a.entity_type','a.entity_id']),params:[p.like,p.like,p.like],order:'a.id DESC'},query);
  throw Error('قائمة غير معروفة');
 }

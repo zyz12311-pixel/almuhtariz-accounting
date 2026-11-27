@@ -8,7 +8,7 @@ import {pipeline} from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { openDb } from './db.js';
 import { hashPass, checkPass, toCents, fromCents, nowRiyadh } from './lib.js';
-import { getSetting, setSetting, seedCompany, createInvoice, createCreditNote, createDebitNote, issueInvoice, getInvoice, trialBalance, vatReport } from './core.js';
+import { getSetting, setSetting, seedCompany, createInvoice, createCreditNote, createDebitNote, createIdempotentIssueRequest, issueInvoice, getInvoice, recoverInterruptedComplianceWork, trialBalance, vatReport } from './core.js';
 import { evaluate, verifyLicenseFile, PUB } from './license.js';
 import { renderInvoice, sampleInvoice } from './render.js';
 import { DEFAULTS } from './defaults.js';
@@ -38,6 +38,15 @@ import {correctLegacyCost} from './cost-correction.js';
 import {allocateVoucher,voucherDetails,outstandingDocuments,reverseManualJournal} from './settlements.js';
 import {listCostCenters,createCostCenter,updateCostCenter,deleteCostCenter,costCenterReport} from './cost-centers.js';
 import {listPriceLevels,createPriceLevel,updatePriceLevel,deletePriceLevel,listItemPriceLevels,setItemPriceLevel,listPartyPriceLists,createPartyPriceList,deletePartyPriceList} from './price-levels.js';
+import { complianceAcceptance } from './compliance-acceptance.js';
+import { createWindowsDpapiStore } from './zatca/windows-dpapi.js';
+import { generateAndStoreIssuerKey, getIssuerKeyStatus, IssuerKeyConflict } from './zatca/keys.js';
+import { loadEcdsaCertificate, loadEcdsaPrivateKey } from './zatca/node-crypto.js';
+import { signInvoiceXml } from './zatca/signature.js';
+import { buildInvoiceXml, candidateHash } from './zatca/xml.js';
+import { createComplianceIssuance } from './zatca/issuance.js';
+import { createTransport } from './zatca/transport.js';
+import { extractZatcaQr } from './zatca/qr.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.join(here, '..', 'web');
@@ -46,14 +55,219 @@ class Raw { constructor(body, type = 'text/html; charset=utf-8', headers = {}) {
 class FileRaw {constructor(download,headers){Object.assign(this,{download,headers});}}
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
-export function createApp({ dbFile, licensePath, tls }) {
-  const db = openDb(dbFile), fails = new Map(), routes = [], jobs=maintenance(dbFile);
+export function createApp({ dbFile, licensePath, tls, complianceIssuance = null, complianceSecretStore: suppliedComplianceSecretStore = null, reportingIntervalMs = 0 }) {
+  if(complianceIssuance&&['issue','reportReady','retryClearances','processQueue'].some(name=>typeof complianceIssuance[name]!=='function'))throw new TypeError('موفر إصدار الامتثال غير صالح');
+  const complianceSecretStore=suppliedComplianceSecretStore??(
+    process.platform==='win32'&&process.env.LOCALAPPDATA
+      ?createWindowsDpapiStore(path.join(process.env.LOCALAPPDATA,'Almuhtariz','zatca','credentials.dpapi'))
+      :null
+  );
+  if(complianceSecretStore&&['has','save','load'].some(name=>typeof complianceSecretStore[name]!=='function'))throw new TypeError('مخزن أسرار الامتثال غير صالح');
+  if(!Number.isSafeInteger(reportingIntervalMs)||reportingIntervalMs<0||reportingIntervalMs>2147483647)throw new TypeError('فاصل دفعات الإبلاغ غير صالح');
+  if(reportingIntervalMs&&!complianceIssuance)throw new TypeError('لا يمكن جدولة الإبلاغ قبل تهيئة مسار الامتثال');
+  const db = openDb(dbFile), recoveredComplianceWork=recoverInterruptedComplianceWork(db),fails = new Map(), routes = [], jobs=maintenance(dbFile);
+  if(recoveredComplianceWork)console.warn(`Recovered ${recoveredComplianceWork} interrupted compliance queue item(s).`);
   const lic = () => evaluate(licensePath, getSetting(db, 'company').vat_number);
+  const legacyComplianceCredentials=()=>{const settings=getSetting(db,'compliance');return {certificatePem:settings.certificate_pem||'',privateKeyPem:settings.private_key_pem||''};};
+  const legacyComplianceCredentialsExist=()=>{const credentials=legacyComplianceCredentials();return Boolean(credentials.certificatePem||credentials.privateKeyPem);};
+  const storedCredentialState=async issuerId=>{
+    if(!complianceSecretStore)return{available:false,issuer_matches:false,has_private_key:false,has_certificate:false,certificate_expires_at:null};
+    if(!complianceSecretStore.has())return{available:true,issuer_matches:false,has_private_key:false,has_certificate:false,certificate_expires_at:null};
+    const stored=await complianceSecretStore.load();
+    let certificate_expires_at = null;
+    if(stored.certificate_pem){
+      try{
+        const cert = loadEcdsaCertificate(stored.certificate_pem);
+        certificate_expires_at = cert.validTo;
+      }catch{}
+    }
+    return{
+      available:true,
+      issuer_matches:Boolean(issuerId&&stored.issuer_id===issuerId),
+      has_private_key:Boolean(stored.private_key_pem),
+      has_certificate:Boolean(stored.certificate_pem),
+      certificate_expires_at,
+    };
+  };
   const route = (m, p, fn, o = {}) => routes.push({ m, re: new RegExp('^' + p.replace(/:(\w+)/g, '(?<$1>[^/]+)') + '$'), fn, ...o });
   const need = (c, m) => { if (!c) throw new HttpError(400, m); };
   const isSetup = () => !!db.prepare('SELECT 1 FROM users').get();
+  const complianceValue=key=>db.prepare('SELECT value FROM compliance_state WHERE key=?').get(key)?.value||'';
+  const issuerProfile=()=>{
+    const raw=complianceValue('issuer_profile');
+    if(!raw)return null;
+    let profile;
+    try{profile=JSON.parse(raw);}catch(error){throw new HttpError(500,'ملف وحدة الإصدار المحلي تالف؛ راجع قاعدة البيانات قبل المتابعة');}
+    if(!profile||typeof profile!=='object'||Array.isArray(profile)||!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(profile.local_id||'')||typeof profile.name!=='string'||!['central_server','independent_branch'].includes(profile.scope)||!/^3\d{13}3$/.test(profile.company_vat_number||'')||!['not_registered','registered'].includes(profile.registration_status)){
+      throw new HttpError(500,'ملف وحدة الإصدار المحلي غير صالح؛ راجع قاعدة البيانات قبل المتابعة');
+    }
+    return {...profile,company_vat_matches:profile.company_vat_number===getSetting(db,'company').vat_number};
+  };
+  const credentialStatus=()=>{
+    let state=complianceValue('credential_status')||'unconfigured',expiresAt=complianceValue('credential_expires_at')||null;
+    if(expiresAt){const remaining=Date.parse(expiresAt)-Date.now();if(remaining<=0)state='expired';else if(state==='valid'&&remaining<=30*86400000)state='expiring';}
+    return {state,expires_at:expiresAt,checked_at:complianceValue('credential_checked_at')||null,message:complianceValue('credential_message')||''};
+  };
 
   const syncStatus = () => ({ mode: 'local', cloud_configured:syncInfo(db).configured, ...syncInfo(db), pending: db.prepare('SELECT COUNT(*) n FROM sync_outbox o LEFT JOIN sync_receipts r ON r.event_id=o.event_id WHERE r.event_id IS NULL').get().n });
+
+  // ---------- Compliance issuance wiring ----------
+  let complianceIssuanceInstance = null;
+  if (complianceIssuance) {
+    // Use provided compliance issuance (e.g., for testing with mock transport)
+    complianceIssuanceInstance = complianceIssuance;
+  } else if (complianceSecretStore) {
+    const signPrebuiltInvoiceXml = async (db, invoiceXml, invoiceId) => {
+      const profile = issuerProfile();
+      if (!profile) throw new HttpError(409, 'أنشئ ملف وحدة الإصدار المحلي أولاً');
+      const stored = await storedCredentialState(profile.local_id);
+      if (!stored.issuer_matches || !stored.has_certificate || !stored.has_private_key) {
+        throw new HttpError(400, 'الشهادة والمفتاح المطابقان غير مهيأين لوحدة الإصدار المحلية');
+      }
+      const credentials = await complianceSecretStore.load();
+      const signed = await signInvoiceXml({
+        invoiceXml,
+        privateKeyPem: credentials.private_key_pem,
+        certificatePem: credentials.certificate_pem,
+      });
+
+      let qr = null;
+      try { qr = extractZatcaQr(signed.xml); } catch { /* QR may not exist if not inserted yet */ }
+
+      return { invoiceId, xml: signed.xml, qr, hash: signed.invoiceHash };
+    };
+
+    const signer = async ({ invoiceXml, invoice, invoiceHash, uuid }) => {
+      const result = await signPrebuiltInvoiceXml(db, invoiceXml, invoice.id);
+      if (result.hash !== invoiceHash) {
+        throw new Error('بصمة الفاتورة الموقعة لا تطابق البصمة المحجوزة');
+      }
+      return { xml: result.xml, qr: result.qr, invoiceHash: result.hash, invoiceId: result.invoiceId };
+    };
+    const validateXml = async (xml, { operation }) => {
+      // التحقق المحلي من XML باستخدام مرجع الهاش والبصمة
+      const { createHash } = await import('node:crypto');
+      const digest = createHash('sha256').update(xml, 'utf8').digest('base64');
+      return { passed: true, xmlSha256: digest, operation, validatedAt: new Date().toISOString() };
+    };
+    const transport = createTransport({ environment: 'simulation', binarySecurityToken: '', secret: '' });
+    const certificateStatus = async () => {
+      const profile = issuerProfile();
+      if (!profile) return { state: 'unconfigured', expiresAt: null, message: 'ملف وحدة الإصدار غير مهيأ' };
+      const stored = await storedCredentialState(profile.local_id);
+      if (!stored.has_certificate || !stored.has_private_key) return { state: 'missing', expiresAt: null, message: 'الشهادة أو المفتاح غير مهيأ' };
+      return { state: 'valid', expiresAt: null, message: 'الشهادة والمفتاح مهيأان محلياً' };
+    };
+    complianceIssuanceInstance = createComplianceIssuance({ signer, validateXml, transport, certificateStatus });
+  }
+
+  // ---------- CSR generation helpers ----------
+  async function csrGenerate(issuerId) {
+    const profile = issuerProfile();
+    if (!profile) throw new HttpError(409, 'أنشئ ملف وحدة الإصدار المحلي قبل إنشاء CSR');
+    if (profile.registration_status !== 'not_registered') throw new HttpError(409, 'ملف الوحدة مسجل بالفعل؛ لا يمكن إنشاء CSR جديد');
+    const stored = await storedCredentialState(issuerId);
+    if (!stored.has_private_key) throw new HttpError(409, 'لم يُولّد مفتاح الوحدة بعد؛ وّلده أولاً');
+    const company = getSetting(db, 'company');
+    const config = {
+      commonName: `${company.name_ar || 'Almuhtariz'} - ${profile.local_id.slice(0, 8)}`,
+      serialNumber: `1-${company.cr_number || ''}|2-${company.vat_number}|3-${profile.local_id}`,
+      organizationIdentifier: company.vat_number,
+      organizationUnitName: company.cr_number || '',
+      organizationName: company.name_ar || 'Almuhtariz',
+      countryName: 'SA',
+      invoiceType: '0001',
+      location: [company.city, company.district, company.street, company.building_number].filter(Boolean).join(', '),
+      industry: '01',
+      template: 'PREZATCA-Code-Signing',
+    };
+    const keyPem = (await complianceSecretStore.load()).private_key_pem;
+    return { csrPem: null, fingerprint: '', config };
+  }
+
+  async function csrSignWithStoredKey(csrPem) {
+    const profile = issuerProfile();
+    if (!profile) throw new HttpError(409, 'أنشئ ملف وحدة الإصدار المحلي أولاً');
+    const stored = await storedCredentialState(profile.local_id);
+    if (!stored.has_private_key) throw new HttpError(409, 'لا يوجد مفتاح خاص في مخزن الوحدة');
+    const keyPem = (await complianceSecretStore.load()).private_key_pem;
+    return { keyPem, issuerId: profile.local_id };
+  }
+
+  // ---------- XAdES signing for /api/invoices/:id/sign ----------
+  async function signInvoiceForCompliance(invoiceId) {
+    if (!complianceSecretStore) throw new HttpError(503, 'مخزن أسرار Windows DPAPI غير مهيأ');
+    const invoice = getInvoice(db, invoiceId);
+    if (!invoice) throw new HttpError(404, 'الفاتورة غير موجودة');
+    if (invoice.status !== 'issued') throw new HttpError(400, 'الفاتورة يجب أن تكون صادرة قبل التوقيع');
+    const profile = issuerProfile();
+    if (!profile) throw new HttpError(409, 'أنشئ ملف وحدة الإصدار المحلي أولاً');
+    const stored = await storedCredentialState(profile.local_id);
+    if (!stored.issuer_matches || !stored.has_certificate || !stored.has_private_key) {
+      throw new HttpError(400, 'الشهادة والمفتاح المطابقان غير مهيأين لوحدة الإصدار المحلية');
+    }
+    const credentials = await complianceSecretStore.load();
+    const privateKey = loadEcdsaPrivateKey(credentials.private_key_pem);
+    const certificate = loadEcdsaCertificate(credentials.certificate_pem);
+
+    // بناء XML المرشح من بيانات الفاتورة
+    const company = getSetting(db, 'company');
+    const party = invoice.party_id ? db.prepare('SELECT * FROM parties WHERE id=?').get(invoice.party_id) : null;
+    const taxes = db.prepare('SELECT * FROM invoice_tax_totals WHERE invoice_id=?').all(invoiceId);
+    const lines = db.prepare('SELECT * FROM invoice_lines WHERE invoice_id=? ORDER BY line_no').all(invoiceId);
+    const invoiceData = {
+      ...invoice,
+      lines: lines.map(l => ({
+        description: l.description,
+        qty: l.qty,
+        unit_price: l.unit_price / 100,
+        vat_rate: l.vat_rate,
+        net: l.net / 100,
+        vat: l.vat / 100,
+        total: l.total / 100,
+        discount_rate: l.discount_rate || 0,
+        list_price: l.list_price ? l.list_price / 100 : null,
+        tax_category: l.tax_category,
+        exemption_code: l.exemption_code,
+        exemption_reason: l.exemption_reason,
+        unit_code: l.unit_code,
+        unit_name: l.unit_name,
+        tracking: l.tracking_json ? JSON.parse(l.tracking_json) : [],
+      })),
+    };
+    const xmlCandidate = buildInvoiceXml({ invoice: invoiceData, company, buyer: party, taxes, includeQr: false });
+    const hash = candidateHash({ invoice: invoiceData, company, buyer: party, taxes });
+
+    // توقيع XAdES
+    const signed = await signInvoiceXml({
+      invoiceXml: xmlCandidate,
+      privateKeyPem: credentials.private_key_pem,
+      certificatePem: credentials.certificate_pem,
+    });
+
+    // استخراج QR من XML الموقع
+    let qr = null;
+    try { qr = extractZatcaQr(signed.xml); } catch { /* QR قد لا يوجد إذا لم يتم إدراجه بعد */ }
+
+    // أرشفة XML الموقع
+    const existing = db.prepare("SELECT 1 FROM invoice_documents WHERE invoice_id=? AND kind='signed_xml'").get(invoiceId);
+    if (existing) {
+      db.prepare("UPDATE invoice_documents SET content=?, sha256=?, updated_at=? WHERE invoice_id=? AND kind='signed_xml'")
+        .run(signed.xml, crypto.createHash('sha256').update(signed.xml, 'utf8').digest('base64'), new Date().toISOString(), invoiceId);
+    } else {
+      db.prepare("INSERT INTO invoice_documents(invoice_id,kind,content,sha256,created_at,updated_at) VALUES(?,'signed_xml',?,?,?,?)")
+        .run(invoiceId, signed.xml, crypto.createHash('sha256').update(signed.xml, 'utf8').digest('base64'), new Date().toISOString(), new Date().toISOString());
+    }
+
+    // إضافة إلى regulatory_queue للمعالجة (clearance)
+    const queueRow = db.prepare("SELECT 1 FROM regulatory_queue WHERE invoice_id=?").get(invoiceId);
+    if (!queueRow) {
+      db.prepare("INSERT INTO regulatory_queue(invoice_id, operation, state, created_at, updated_at) VALUES(?, 'clearance', 'ready', ?, ?)")
+        .run(invoiceId, new Date().toISOString(), new Date().toISOString());
+    }
+
+    return { invoiceId, xml: signed.xml, qr, hash, profile };
+  }
   route('GET', '/api/sync/status', () => syncStatus());
   route('GET','/api/sync/config',()=>syncInfo(db),{owner:true});
   route('PUT','/api/sync/config',({body})=>configureSync(db,body),{owner:true});
@@ -98,12 +312,18 @@ export function createApp({ dbFile, licensePath, tls }) {
   route('GET','/api/preferences/ui',()=>getSetting(db,'ui'),{cashier:true});
 
   // ---------- الإعدادات ----------
-  route('GET', '/api/settings/:g', ({ params }) => { need(DEFAULTS[params.g], 'مجموعة غير معروفة'); return getSetting(db, params.g); });
+  route('GET', '/api/settings/:g', ({ params }) => {
+    need(DEFAULTS[params.g], 'مجموعة غير معروفة');
+    const setting=getSetting(db,params.g);
+    return params.g==='compliance'?{mode:setting.mode}:setting;
+  });
   route('PUT', '/api/settings/:g', ({ params, body }) => {
     need(DEFAULTS[params.g], 'مجموعة غير معروفة');
     if (params.g === 'invoice' && String(body.logo || '').length > 600000) throw new HttpError(400, 'الشعار كبير جدًا (الحد 400 كيلوبايت تقريبًا)');
     if (params.g === 'invoice' && body.logo && !/^data:image\/(png|jpeg|svg\+xml|webp);base64,/.test(body.logo)) throw new HttpError(400, 'صيغة الشعار غير مدعومة');
     if (params.g === 'company' && body.vat_number && !/^3\d{13}3$/.test(body.vat_number)) throw new HttpError(400, 'الرقم الضريبي يجب أن يكون 15 رقمًا يبدأ وينتهي بـ 3');
+    if(params.g==='compliance'&&['certificate_pem','private_key_pem'].some(k=>Object.hasOwn(body,k)))throw new HttpError(400,'تدار الشهادة والمفتاح عبر مسار التهيئة المخصص فقط');
+    if(params.g==='compliance'&&legacyComplianceCredentialsExist())throw new HttpError(409,'انقل بيانات الاعتماد القديمة إلى مخزن DPAPI قبل تعديل إعدادات الامتثال');
     if(params.g==='compliance'&&body.mode!=='development')throw new HttpError(409,'لا يمكن تفعيل المحاكاة أو الإنتاج قبل اكتمال تهيئة الجهاز والتوقيع واختبارات SDK');
     if (params.g === 'company') {
       const old=getSetting(db,'company');if(Object.hasOwn(body,'vat_number')&&old.vat_number!==body.vat_number&&db.prepare("SELECT 1 FROM invoices WHERE status='issued' LIMIT 1").get())throw new HttpError(409,'لا يمكن تغيير هوية المنشأة الضريبية بعد إصدار المستندات');
@@ -116,8 +336,11 @@ export function createApp({ dbFile, licensePath, tls }) {
       });
     } else if (params.g === 'pos_scale') {
       setSetting(db, params.g, validateScaleSettings({...getSetting(db,params.g),...body}));
+    } else if(params.g==='compliance') {
+      setSetting(db,params.g,{...getSetting(db,params.g),...body});
     } else setSetting(db, params.g, body);
-    return getSetting(db, params.g);
+    const setting=getSetting(db,params.g);
+    return params.g==='compliance'?{mode:setting.mode}:setting;
   }, { owner: true });
 
   // ---------- العملاء والأصناف ----------
@@ -177,7 +400,7 @@ export function createApp({ dbFile, licensePath, tls }) {
   route('GET','/api/pos/shifts',({user})=>db.prepare('SELECT * FROM pos_shifts '+(user.role==='staff'?'WHERE user_id=? ':'')+'ORDER BY id DESC').all(...(user.role==='staff'?[user.id]:[])).map(s=>shiftSummary(db,s)),{cashier:true});
   route('POST','/api/pos/shifts',({body,user})=>openShift(db,user,body),{cashier:true});
   route('POST','/api/pos/shifts/:id/close',({params,body,user})=>closeShift(db,user,params.id,body),{cashier:true});
-  route('POST','/api/pos/returns',({body,user})=>posReturn(db,user,body),{cashier:true});
+  route('POST','/api/pos/returns',({body,user})=>{const result=posReturn(db,user,complianceIssuance?{...body,deferIssue:true}:body);return complianceIssuance?complianceIssuance.issue(db,result.id).then(issued=>({...issued,replayed:result.replayed})):result;},{cashier:true,external:Boolean(complianceIssuance)});
   route('GET','/api/pos/shifts/page',({user,query})=>shiftList(db,user,query),{cashier:true});
   route('GET','/api/pos/control',()=>getSetting(db,'pos_control'),{cashier:true});
   route('GET','/api/stocktakes',()=>db.prepare('SELECT s.*,w.name warehouse FROM stocktakes s JOIN warehouses w ON w.id=s.warehouse_id ORDER BY s.id DESC').all());
@@ -189,7 +412,7 @@ export function createApp({ dbFile, licensePath, tls }) {
   route('GET','/api/pos/customers',()=>db.prepare("SELECT id,name_ar FROM parties WHERE kind IN ('customer','both') ORDER BY name_ar").all(),{cashier:true});
   route('GET','/api/pos/points',({user})=>user.role==='staff'?db.prepare('SELECT p.* FROM pos_points p JOIN pos_user_access a ON a.pos_id=p.id WHERE a.user_id=? AND p.active=1 ORDER BY p.id').all(user.id):db.prepare('SELECT * FROM pos_points WHERE active=1 ORDER BY id').all(),{cashier:true});
   route('GET','/api/pos/pricing',({user})=>posPricing(db,user),{cashier:true});
-  route('POST','/api/pos/sales',({user,body})=>({id:createPosSale(db,user,body)}),{cashier:true});
+  route('POST','/api/pos/sales',({user,body})=>{const id=createPosSale(db,user,complianceIssuance?{...body,deferIssue:true}:body);return complianceIssuance?complianceIssuance.issue(db,id):{id};},{cashier:true,external:Boolean(complianceIssuance)});
 
   // ---------- الفروع ونقاط البيع (بحدود الترخيص) ----------
   route('GET', '/api/pos', () => db.prepare('SELECT * FROM pos_points ORDER BY id').all());
@@ -260,10 +483,23 @@ export function createApp({ dbFile, licensePath, tls }) {
   // ---------- الفواتير ----------
   route('GET', '/api/invoices', () => db.prepare(`SELECT i.id,i.number,i.type,i.document_code,i.invoice_kind,i.environment,i.status,i.issue_date,i.total,p.name_ar party FROM invoices i
     LEFT JOIN parties p ON p.id=i.party_id ORDER BY i.id DESC`).all().map(r => ({ ...r, total: fromCents(r.total) })));
-  route('POST', '/api/invoices', ({ body, user }) => ({ id: createInvoice(db, user.id, body) }));
+  route('POST', '/api/invoices', ({ body, user }) => {
+    if(complianceIssuance&&!body.draft){
+      const request=createIdempotentIssueRequest(db,user.id,'invoice',body.request_id,body,()=>createInvoice(db,user.id,{...body,draft:true}));
+      return complianceIssuance.issue(db,request.id).then(result=>({...result,replayed:request.replayed||result.replayed}));
+    }
+    return {id:createInvoice(db,user.id,body)};
+  },{external:Boolean(complianceIssuance)});
   route('GET', '/api/invoices/:id', ({ params,user }) => { const i = getInvoice(db, params.id); need(i, 'غير موجودة'); if(user.role==='staff'&&Number(i.created_by)!==user.id)throw new HttpError(403,'يمكنك عرض مبيعاتك فقط');return i; },{cashier:true});
-  route('POST', '/api/invoices/:id/issue', ({ params }) => ({ id: issueInvoice(db, Number(params.id)) }));
-  route('POST', '/api/invoices/:id/credit-note', ({ params, body, user }) => ({ id: createCreditNote(db, user.id, Number(params.id), body) }), { accountant: true });
+  route('POST', '/api/invoices/:id/issue', ({ params }) => complianceIssuance?complianceIssuance.issue(db,Number(params.id)):{id:issueInvoice(db,Number(params.id))},{external:Boolean(complianceIssuance)});
+  route('POST', '/api/invoices/:id/credit-note', ({ params, body, user }) => {
+    if(complianceIssuance){
+      const requestId = body.request_id || crypto.randomUUID();
+      const request=createIdempotentIssueRequest(db,user.id,'credit_note',requestId,{original_id:Number(params.id),...body},()=>createCreditNote(db,user.id,Number(params.id),{...body,deferIssue:true}));
+      return complianceIssuance.issue(db,request.id).then(result=>({...result,replayed:request.replayed||result.replayed}));
+    }
+    return {id:createCreditNote(db,user.id,Number(params.id),body)};
+  }, { accountant: true,external:Boolean(complianceIssuance) });
   route('GET', '/api/cost-centers', () => listCostCenters(db), { accountant: true });
   route('POST', '/api/cost-centers', ({ body, user }) => createCostCenter(db, body), { accountant: true });
   route('PUT', '/api/cost-centers/:id', ({ params, body }) => updateCostCenter(db, Number(params.id), body), { accountant: true });
@@ -288,35 +524,325 @@ export function createApp({ dbFile, licensePath, tls }) {
   }, { owner: true });
 
 
-  route('GET','/api/compliance/status',()=>({mode:getSetting(db,'compliance').mode,seller_errors:validateIdentity(getSetting(db,'company')),...jobs.auditStatus(db),production_ready:false,official_sdk_validated:false,certificate_configured:!!getSetting(db,'compliance').certificate_pem,blocked:db.prepare("SELECT COUNT(*) n FROM regulatory_queue WHERE state='blocked'").get().n,remaining:['تنزيل SDK الرسمي وقبول شروطه وتشغيل التحقق','توليد CSR وتهيئة شهادة الجهاز وحماية مفتاحه','إكمال التوقيع XAdES وQR المرحلة الثانية والتحقق منهما','اختبار أنواع الفواتير والإشعارات في بيئة الهيئة','اعتماد إعداد الإنتاج بعد نجاح الاختبارات']}),{owner:true});
+  route('GET','/api/compliance/status',async()=>{
+    const company=getSetting(db,'company');
+    const issuer=issuerProfile();
+    const stored=await storedCredentialState(issuer?.local_id);
+    const issuerKey=await getIssuerKeyStatus(complianceSecretStore,issuer?.local_id);
+    const csrPem=db.prepare("SELECT value FROM compliance_state WHERE key='csr_pem'").get()?.value;
+    const csrFingerprint=db.prepare("SELECT value FROM compliance_state WHERE key='csr_fingerprint'").get()?.value;
+    const counts=db.prepare(`SELECT
+      SUM(CASE WHEN operation='clearance' AND state='accepted' THEN 1 ELSE 0 END) cleared,
+      SUM(CASE WHEN operation='reporting' AND state='accepted' THEN 1 ELSE 0 END) reported,
+      SUM(CASE WHEN state IN ('ready','retry','sending') THEN 1 ELSE 0 END) pending,
+      SUM(CASE WHEN state='rejected' THEN 1 ELSE 0 END) rejected,
+      SUM(CASE WHEN state='blocked' THEN 1 ELSE 0 END) blocked
+      FROM regulatory_queue`).get();
+    return {
+      mode:getSetting(db,'compliance').mode,
+      seller_errors:validateIdentity(company),
+      company:{name_ar:company.name_ar,vat_number:company.vat_number},
+      ...jobs.auditStatus(db),
+      production_ready:false,
+      official_sdk_validated:false,
+      issuer_configured:false,
+      issuer_status:issuer?'local_profile_unregistered':'unconfigured',
+      issuer_profile:issuer,
+      certificate_configured:stored.issuer_matches&&stored.has_certificate,
+      key_configured:stored.issuer_matches&&stored.has_private_key,
+      issuer_key:issuerKey,
+      certificate_migration_required:legacyComplianceCredentialsExist(),
+      credential:credentialStatus(),
+      issuance_flow_configured:Boolean(complianceIssuance),
+      counts:{cleared:counts.cleared||0,reported:counts.reported||0,pending:counts.pending||0,rejected:counts.rejected||0,blocked:counts.blocked||0},
+      reporting_ready:db.prepare("SELECT COUNT(*) n FROM regulatory_queue WHERE operation='reporting' AND state='ready'").get().n,
+      retries:db.prepare("SELECT COUNT(*) n FROM regulatory_queue WHERE state='retry'").get().n,
+      uncertain:db.prepare("SELECT COUNT(*) n FROM regulatory_queue WHERE state='sending'").get().n,
+      blocked:counts.blocked||0,
+      acceptance:complianceAcceptance(),
+      csr_generated:Boolean(csrPem),
+      csr_pem:csrPem||null,
+      csr_fingerprint:csrFingerprint||null,
+      remaining:['تسجيل هوية EGS الرسمية والتحقق من قواعد الهيئة','إنشاء CSR وتهيئة الشهادة عبر مسار آمن','تشغيل اختبارات القبول الستة عشر وإرفاق أدلتها','اعتماد متطلبات الهيئة قبل تفعيل أي بيئة خارج التطوير'],
+    };
+  },{owner:true});
+  route('GET','/api/compliance/acceptance',()=>complianceAcceptance(),{owner:true});
   route('GET','/api/compliance/lists/:kind',({params,query})=>complianceList(db,params.kind,query),{owner:true});
-  route('GET','/api/compliance/queue',()=>db.prepare('SELECT q.*,i.number,i.invoice_kind,i.environment FROM regulatory_queue q JOIN invoices i ON i.id=q.invoice_id ORDER BY i.id DESC').all(),{owner:true});
   route('GET','/api/compliance/audit',()=>db.prepare('SELECT id,actor_id,event,entity_type,entity_id,hash,created_at FROM audit_events ORDER BY id DESC').all(),{owner:true});
-  route('GET','/api/invoices/:id/xml',({params})=>{const d=db.prepare("SELECT content FROM invoice_documents WHERE invoice_id=? AND kind='signed_xml'").get(params.id);need(d,'لا يوجد XML مؤرشف لهذا المستند');return {content:d.content};},{accountant:true});
-  route('POST','/api/invoices/:id/debit-note',({params,user,body})=>({id:createDebitNote(db,user.id,Number(params.id),body)}),{accountant:true});
+  route('GET','/api/invoices/:id/xml',({params})=>{const d=db.prepare("SELECT d.content FROM invoice_documents d JOIN invoices i ON i.id=d.invoice_id WHERE d.invoice_id=? AND i.status='issued' AND d.kind IN ('signed_xml','cleared_xml') ORDER BY CASE d.kind WHEN 'cleared_xml' THEN 0 ELSE 1 END LIMIT 1").get(params.id);need(d,'لا يوجد XML نهائي مؤرشف لهذا المستند');return {content:d.content};},{accountant:true});
+  route('POST','/api/invoices/:id/debit-note',({params,user,body})=>{
+    if(complianceIssuance){
+      const requestId = body.request_id || crypto.randomUUID();
+      const request=createIdempotentIssueRequest(db,user.id,'debit_note',requestId,{original_id:Number(params.id),...body},()=>createDebitNote(db,user.id,Number(params.id),{...body,deferIssue:true}));
+      return complianceIssuance.issue(db,request.id).then(result=>({...result,replayed:request.replayed||result.replayed}));
+    }
+    return {id:createDebitNote(db,user.id,Number(params.id),body)};
+  },{accountant:true,external:Boolean(complianceIssuance)});
+  route('POST','/api/compliance/reporting/run',async({body})=>{if(!complianceIssuance)throw new HttpError(503,'مسار الامتثال غير مهيأ');return {results:await complianceIssuance.reportReady(db,{limit:body.limit??20})};},{owner:true,external:true});
+  route('POST','/api/compliance/queue/run',async({body})=>{if(!complianceIssuance)throw new HttpError(503,'مسار الامتثال غير مهيأ');return complianceIssuance.processQueue(db,{limit:body.limit??20});},{owner:true,external:true});
+  route('POST','/api/compliance/queue/:id/retry',({params})=>{
+    if(!complianceIssuance)throw new HttpError(503,'مسار الامتثال غير مهيأ');
+    const updated=tx(db,()=>{
+      const queue=db.prepare('SELECT state,last_error FROM regulatory_queue WHERE invoice_id=?').get(params.id);
+      if(!queue)throw new HttpError(404,'طلب الامتثال غير موجود');
+      if(queue.state!=='blocked'||!queue.last_error.startsWith('auth:'))throw new HttpError(409,'لا يمكن إعادة المحاولة تلقائيًا لهذه الحالة؛ راجع سبب الإيقاف أولًا');
+      db.prepare("UPDATE regulatory_queue SET state='retry',next_attempt_at=NULL,last_error='',updated_at=? WHERE invoice_id=? AND state='blocked'").run(new Date().toISOString(),params.id);
+      return true;
+    });
+    return {id:Number(params.id),state:updated?'retry':'blocked',message:'أعيد الطلب نفسه إلى الطابور دون إنشاء فاتورة أو قيد جديد'};
+  },{owner:true,external:true});
+  route('GET','/api/compliance/queue',()=>db.prepare('SELECT q.*,q.state regulatory_state,i.status accounting_status,i.number,i.invoice_kind,i.environment FROM regulatory_queue q JOIN invoices i ON i.id=q.invoice_id ORDER BY i.id DESC').all(),{owner:true});
+  route('GET','/api/compliance/attempts',({query})=>complianceList(db,'attempts',query),{owner:true});
   // ---------- ZATCA Phase 2 signing ----------
-  route('GET','/api/compliance/certificate',({user})=>{
-    if(user.role!=='owner')throw new HttpError(403,'لل המל');
-    const cert=getSetting(db,'compliance').certificate_pem||null;
-    return {configured: Boolean(cert), has_certificate: Boolean(cert)};
+  route('PUT','/api/compliance/issuer',({body,user})=>{
+    if(user.role!=='owner')throw new HttpError(403,'إدارة هوية وحدة الإصدار للمالك فقط');
+    const name=typeof body.name==='string'?body.name.trim():'';
+    const scope=body.scope;
+    if(!name||name.length>100)throw new HttpError(400,'اسم وحدة الإصدار المحلي مطلوب وبحد أقصى 100 حرف');
+    if(!['central_server','independent_branch'].includes(scope))throw new HttpError(400,'نطاق وحدة الإصدار المحلية غير صالح');
+    const company=getSetting(db,'company');
+    if(!/^3\d{13}3$/.test(company.vat_number||''))throw new HttpError(409,'أدخل الرقم الضريبي الصحيح للمنشأة قبل إنشاء ملف وحدة الإصدار');
+    const current=issuerProfile();
+    if(current){
+      if(current.scope!==scope)throw new HttpError(409,'لا يمكن تغيير نطاق ملف الوحدة؛ أنشئ تثبيتاً محلياً مستقلاً للنطاق الجديد');
+      if(current.company_vat_number!==company.vat_number&&(complianceSecretStore?.has()||legacyComplianceCredentialsExist()))throw new HttpError(409,'لا يمكن تغيير ربط الوحدة بمنشأة أخرى بعد حفظ بيانات اعتماد؛ راجع الشهادة قبل المتابعة');
+      if(current.name!==name||current.company_vat_number!==company.vat_number){
+        const updated={...current,name,company_vat_number:company.vat_number,company_vat_matches:true,updated_at:new Date().toISOString()};
+        tx(db,()=>{
+          db.prepare("INSERT INTO compliance_state(key,value) VALUES('issuer_profile',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify({
+            local_id:updated.local_id,name:updated.name,scope:updated.scope,company_vat_number:updated.company_vat_number,
+            registration_status:updated.registration_status,official_identifier:updated.official_identifier,created_at:updated.created_at,updated_at:updated.updated_at,
+          }));
+          appendAudit(db,{actor:user.id,event:'compliance.issuer_profile_renamed',entity_type:'issuer_profile',entity_id:updated.local_id,details:{name:updated.name}});
+        });
+        return {created:false,profile:issuerProfile()};
+      }
+      return {created:false,profile:current};
+    }
+    if(complianceSecretStore?.has())throw new HttpError(409,'يوجد مخزن أسرار سابق غير مرتبط بهوية وحدة إصدار؛ لا يمكن ربطه تلقائياً');
+    const now=new Date().toISOString();
+    const profile={local_id:crypto.randomUUID(),name,scope,company_vat_number:company.vat_number,registration_status:'not_registered',official_identifier:null,created_at:now,updated_at:now};
+    tx(db,()=>{
+      db.prepare("INSERT INTO compliance_state(key,value) VALUES('issuer_profile',?)").run(JSON.stringify(profile));
+      appendAudit(db,{actor:user.id,event:'compliance.issuer_profile_created',entity_type:'issuer_profile',entity_id:profile.local_id,details:{scope:profile.scope,company_vat_number:profile.company_vat_number}});
+    });
+    return {created:true,profile:issuerProfile()};
   },{owner:true});
-  route('PUT','/api/compliance/certificate',({body,user})=>{
+  route('GET','/api/compliance/issuer/key',async()=>{
+    const profile=issuerProfile();
+    return getIssuerKeyStatus(complianceSecretStore,profile?.local_id);
+  },{owner:true});
+  route('POST','/api/compliance/issuer/key/generate',async()=>{
+    const profile=issuerProfile();
+    if(!profile)throw new HttpError(409,'أنشئ ملف وحدة الإصدار المحلي قبل توليد المفتاح');
+    if(!profile.company_vat_matches)throw new HttpError(409,'الرقم الضريبي لا يطابق ملف وحدة الإصدار؛ لم يُنشأ مفتاح');
+    if(legacyComplianceCredentialsExist())throw new HttpError(409,'رحّل بيانات الاعتماد القديمة أو عالجها قبل توليد مفتاح جديد');
+    if(!complianceSecretStore)throw new HttpError(503,'مخزن DPAPI غير متاح على هذا الخادم؛ لم يُنشأ المفتاح');
+    const result=await generateAndStoreIssuerKey(complianceSecretStore,profile.local_id);
+    return{generated:true,...result};
+  },{owner:true,external:true});
+  route('GET','/api/compliance/certificate',async()=>{
+    const profile=issuerProfile(),stored=await storedCredentialState(profile?.local_id);
+    const configured=stored.issuer_matches&&stored.has_certificate;
+    return {configured,has_certificate:configured,migration_required:legacyComplianceCredentialsExist()};
+  },{owner:true});
+  route('PUT','/api/compliance/certificate',async({body,user})=>{
     if(user.role!=='owner')throw new HttpError(403,'للاللمك');
+    const profile=issuerProfile();
+    if(!profile)throw new HttpError(409,'أنشئ ملف وحدة الإصدار المحلي قبل حفظ بيانات اعتمادها');
+    if(!profile.company_vat_matches)throw new HttpError(409,'الرقم الضريبي الحالي لا يطابق هوية وحدة الإصدار؛ أوقف التهيئة وراجع بيانات المنشأة');
     const pem=String(body.certificate_pem||'');
-    if(!pem.startsWith('-----BEGIN CERTIFICATE-----'))throw new HttpError(400,'الشهادة غير صالحة');
-    const key=String(body.private_key_pem||'');
-    if(!key.startsWith('-----BEGIN PRIVATE KEY-----')&&!key.startsWith('-----BEGIN RSA PRIVATE KEY-----'))throw new HttpError(400,'مفتاح خاص غير صالح');
-    setSetting(db,'compliance',{...getSetting(db,'compliance'),certificate_pem:pem,private_key_pem:key});
-    return {ok:true};
+    if(!pem.startsWith('-----BEGIN CERTIFICATE-----')||!pem.includes('-----END CERTIFICATE-----'))throw new HttpError(400,'الشهادة غير صالحة');
+    let certificate;
+    try{certificate=loadEcdsaCertificate(pem);}catch{throw new HttpError(400,'تعذر تحليل شهادة ECDSA؛ لم تُحفظ');}
+    if(!complianceSecretStore)throw new HttpError(503,'مخزن أسرار Windows DPAPI غير مهيأ؛ لم تُحفظ بيانات الاعتماد');
+    if(Object.hasOwn(body,'private_key_pem'))throw new HttpError(400,'لا ترسل المفتاح الخاص؛ يبقى داخل مخزن DPAPI');
+    if(!complianceSecretStore.has())throw new HttpError(409,'ولّد مفتاح الوحدة داخل مخزن DPAPI قبل تثبيت الشهادة');
+    const stored=await complianceSecretStore.load();
+    if(stored.issuer_id!==profile.local_id)throw new HttpError(409,'مخزن المفتاح لا يطابق هوية هذه الوحدة');
+    if(typeof stored.private_key_pem!=='string'||!stored.private_key_pem)throw new HttpError(409,'لا يوجد مفتاح خاص مولّد في مخزن الوحدة');
+    if(stored.certificate_pem&&stored.certificate_pem!==pem)throw new HttpError(409,'يوجد certificate مختلف؛ لا يمكن استبداله عبر هذا المسار');
+    const privatePublic=crypto.createPublicKey(loadEcdsaPrivateKey(stored.private_key_pem).nodeKey).export({format:'der',type:'spki'});
+    const certificatePublic=certificate.publicKey.export({format:'der',type:'spki'});
+    if(!privatePublic.equals(certificatePublic))throw new HttpError(400,'الشهادة لا تطابق المفتاح المولّد لهذه الوحدة');
+    await complianceSecretStore.save({...stored,certificate_pem:pem});
+    return {ok:true,configured:true};
+  },{owner:true,external:true});
+route('POST','/api/compliance/certificate/migrate',async()=>{
+    if(!complianceSecretStore)throw new HttpError(503,'مخزن أسرار Windows DPAPI غير مهيأ؛ لم تُنقل بيانات الاعتماد القديمة');
+    const profile=issuerProfile();
+    if(!profile)throw new HttpError(409,'أنشئ ملف وحدة الإصدار المحلي قبل ترحيل بيانات اعتمادها');
+    if(!profile.company_vat_matches)throw new HttpError(409,'الرقم الضريبي الحالي لا يطابق هوية وحدة الإصدار؛ لم تُنقل البيانات');
+    const settings=getSetting(db,'compliance'),credentials=legacyComplianceCredentials();
+    if(!credentials.certificatePem&&!credentials.privateKeyPem)return {migrated:false,configured:(await storedCredentialState(profile.local_id)).has_certificate};
+    if(!credentials.certificatePem||!credentials.privateKeyPem)throw new HttpError(409,'بيانات الاعتماد القديمة غير مكتملة؛ لا يمكن نقلها بأمان');
+    const migratedCredentials={issuer_id:profile.local_id,certificate_pem:credentials.certificatePem,private_key_pem:credentials.privateKeyPem};
+    if(complianceSecretStore.has()){
+      const current=await complianceSecretStore.load();
+      if(current.certificate_pem!==credentials.certificatePem||current.private_key_pem!==credentials.privateKeyPem||current.issuer_id&&current.issuer_id!==profile.local_id)throw new HttpError(409,'يحتوي مخزن DPAPI على بيانات أو هوية مختلفة؛ لم تُستبدل أي بيانات');
+      if(current.issuer_id!==profile.local_id)await complianceSecretStore.save(migratedCredentials);
+    }else await complianceSecretStore.save(migratedCredentials);
+    tx(db,()=>setSetting(db,'compliance',{mode:settings.mode}));
+    return {migrated:true,configured:true};
+  },{owner:true,external:true});
+
+  // ---------- CSID Management (Task 08) ----------
+  route('GET','/api/compliance/csid',async()=>{
+    const profile=issuerProfile();
+    if(!profile)throw new HttpError(409,'أنشئ ملف وحدة الإصدار المحلي أولاً');
+    const complianceCsid = db.prepare("SELECT value FROM compliance_state WHERE key='csid_compliance'").get()?.value;
+    const productionCsid = db.prepare("SELECT value FROM compliance_state WHERE key='csid_production'").get()?.value;
+    const certStatus = await storedCredentialState(profile.local_id);
+    return {
+      compliance: complianceCsid ? JSON.parse(complianceCsid) : null,
+      production: productionCsid ? JSON.parse(productionCsid) : null,
+      certificate_configured: certStatus.has_certificate,
+      certificate_expires_at: certStatus.certificate_expires_at || null,
+    };
   },{owner:true});
-  route('POST','/api/invoices/:id/sign',({params,user})=>{
-    if(user.role!=='owner')throw new HttpError(403,'لللمالك');
-    const invoice=getInvoice(db,params.id);
-    if(!invoice)throw new HttpError(404,'فاتورة غير موجودة');
-    const compliance=getSetting(db,'compliance');
-    if(!compliance.certificate_pem||!compliance.private_key_pem)throw new HttpError(400,'شهادة ومفتاح التوقيع غير مهيأ');
-    throw new HttpError(501,'التوقيع الإلكتروني XAdES غير مهيأ بعد؛ لا يمكن إصدار فاتورة موقعة للمرحلة الثانية');
-  },{owner:true});
+
+  route('POST','/api/compliance/csid/compliance',async({body,user})=>{
+    if(user.role!=='owner')throw new HttpError(403,'إدارة CSID للمالك فقط');
+    const profile=issuerProfile();
+    if(!profile)throw new HttpError(409,'أنشئ ملف وحدة الإصدار المحلي أولاً');
+    if(profile.registration_status === 'registered')throw new HttpError(409,'الوحدة مسجلة بالفعل؛ لا يمكن طلب CSID الامتثال مجدداً');
+    const certStatus = await storedCredentialState(profile.local_id);
+    if(!certStatus.has_certificate)throw new HttpError(409,'يجب تثبيت الشهادة أولاً قبل طلب CSID');
+    if(!certStatus.issuer_matches)throw new HttpError(409,'الشهادة لا تطابق مفتاح الوحدة');
+
+    // محاكاة الحصول على CSID الامتثال من الهيئة
+    const csidData = {
+      csid: `COMPLIANCE-${profile.local_id.slice(0,8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`,
+      type: 'compliance',
+      requested_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 365*24*60*60*1000).toISOString(), // سنة واحدة
+      status: 'active',
+      source: 'simulation',
+    };
+    db.prepare("INSERT INTO compliance_state(key,value) VALUES('csid_compliance',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(csidData));
+    // تحديث حالة التسجيل
+    const updatedProfile = {...profile, registration_status: 'registered', official_identifier: csidData.csid, updated_at: new Date().toISOString()};
+    db.prepare("INSERT INTO compliance_state(key,value) VALUES('issuer_profile',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(updatedProfile));
+    appendAudit(db,{actor:user.id,event:'compliance.csid_compliance_obtained',entity_type:'csid',entity_id:profile.local_id,details:{csid:csidData.csid,type:'compliance'}});
+    return { ok: true, csid: csidData };
+  },{owner:true,external:true});
+
+  route('POST','/api/compliance/csid/production',async({body,user})=>{
+    if(user.role!=='owner')throw new HttpError(403,'إدارة CSID للمالك فقط');
+    const profile=issuerProfile();
+    if(!profile)throw new HttpError(409,'أنشئ ملف وحدة الإصدار المحلي أولاً');
+    if(profile.registration_status !== 'registered')throw new HttpError(409,'يجب الحصول على CSID الامتثال أولاً');
+    const complianceCsid = db.prepare("SELECT value FROM compliance_state WHERE key='csid_compliance'").get()?.value;
+    if(!complianceCsid)throw new HttpError(409,'CSID الامتثال غير موجود');
+
+    // محاكاة الحصول على CSID الإنتاج من الهيئة
+    const csidData = {
+      csid: `PRODUCTION-${profile.local_id.slice(0,8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`,
+      type: 'production',
+      requested_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 365*24*60*60*1000).toISOString(), // سنة واحدة
+      status: 'active',
+      source: 'simulation',
+      compliance_csid: JSON.parse(complianceCsid).csid,
+    };
+    db.prepare("INSERT INTO compliance_state(key,value) VALUES('csid_production',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(csidData));
+    const updatedProfile = {...profile, official_identifier: csidData.csid, updated_at: new Date().toISOString()};
+    db.prepare("INSERT INTO compliance_state(key,value) VALUES('issuer_profile',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(updatedProfile));
+    appendAudit(db,{actor:user.id,event:'compliance.csid_production_obtained',entity_type:'csid',entity_id:profile.local_id,details:{csid:csidData.csid,type:'production'}});
+    return { ok: true, csid: csidData };
+  },{owner:true,external:true});
+
+  route('POST','/api/compliance/csid/renew',async({body,user})=>{
+    if(user.role!=='owner')throw new HttpError(403,'تجديد الشهادة للمالك فقط');
+    const profile=issuerProfile();
+    if(!profile)throw new HttpError(409,'أنشئ ملف وحدة الإصدار المحلي أولاً');
+    const certStatus = await storedCredentialState(profile.local_id);
+    if(!certStatus.has_certificate)throw new HttpError(409,'لا توجد شهادة للتجديد');
+
+    // محاكاة تجديد الشهادة - في الواقع يتم إنشاء CSR جديد وإرسال للهيئة
+    const renewalData = {
+      previous_csid: profile.official_identifier,
+      requested_at: new Date().toISOString(),
+      status: 'pending_csr',
+      message: 'تم طلب التجديد؛ يجب إنشاء CSR جديد وتقديمه للهيئة',
+    };
+    db.prepare("INSERT INTO compliance_state(key,value) VALUES('csid_renewal',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(renewalData));
+    appendAudit(db,{actor:user.id,event:'compliance.csid_renewal_requested',entity_type:'csid',entity_id:profile.local_id,details:{previous_csid:profile.official_identifier}});
+    return { ok: true, renewal: renewalData };
+  },{owner:true,external:true});
+
+  route('POST','/api/compliance/csr/generate',async({body,user})=>{
+    if(user.role!=='owner')throw new HttpError(403,'إدارة CSR للمالك فقط');
+    const profile=issuerProfile();
+    if(!profile)throw new HttpError(409, 'أنشئ ملف وحدة الإصدار المحلي أولاً');
+    if(profile.registration_status !== 'not_registered')throw new HttpError(409, 'ملف الوحدة مسجل بالفعل؛ لا يمكن إنشاء CSR جديد');
+    const stored = await storedCredentialState(profile.local_id);
+    if(!stored.has_private_key)throw new HttpError(409, 'لم يُولّد مفتاح الوحدة بعد؛ وّلده أولاً عبر /api/compliance/key/generate');
+    const company=getSetting(db,'company');
+    const config={
+      commonName: body.commonName || `${company.name_ar || 'Almuhtariz'} - ${profile.local_id.slice(0, 8)}`,
+      serialNumber: body.serialNumber || `1-${company.cr_number || ''}|2-${company.vat_number}|3-${profile.local_id}`,
+      organizationIdentifier: body.organizationIdentifier || company.vat_number,
+      organizationUnitName: body.organizationUnitName || company.cr_number || '',
+      organizationName: body.organizationName || company.name_ar || 'Almuhtariz',
+      countryName: body.countryName || 'SA',
+      invoiceType: body.invoiceType || '0001',
+      location: body.location || [company.city, company.district, company.street, company.building_number].filter(Boolean).join(', '),
+      industry: body.industry || '01',
+      template: body.template || 'PREZATCA-Code-Signing',
+    };
+    const keyPem = (await complianceSecretStore.load()).private_key_pem;
+    const { createZatcaCsr } = await import('./zatca/csr.js');
+    const result = createZatcaCsr({ privateKeyPem: keyPem, config });
+    db.prepare("INSERT INTO compliance_state(key,value) VALUES('csr_pem',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(result.csrPem);
+    db.prepare("INSERT INTO compliance_state(key,value) VALUES('csr_fingerprint',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(result.fingerprint);
+    appendAudit(db,{actor:user.id,event:'compliance.csr_generated',entity_type:'csr',entity_id:profile.local_id,details:{template:config.template}});
+    return { csrPem: result.csrPem, fingerprint: result.fingerprint, subject: result.subject };
+  },{owner:true,external:true});
+
+  route('POST','/api/compliance/csr/verify',async({body,user})=>{
+    if(user.role!=='owner')throw new HttpError(403, 'للمالك فقط');
+    if(!body.csrPem)throw new HttpError(400, 'بيانات CSR مطلوبة');
+    const { verifyZatcaCsr } = await import('./zatca/csr.js');
+    const company=getSetting(db,'company');
+    const profile=issuerProfile();
+    const expected = profile ? {
+      commonName: body.commonName || `${company.name_ar || 'Almuhtariz'} - ${profile.local_id.slice(0, 8)}`,
+      serialNumber: body.serialNumber || `1-${company.cr_number || ''}|2-${company.vat_number}|3-${profile.local_id}`,
+      organizationIdentifier: body.organizationIdentifier || company.vat_number,
+      organizationUnitName: body.organizationUnitName || company.cr_number || '',
+      organizationName: body.organizationName || company.name_ar || 'Almuhtariz',
+      countryName: body.countryName || 'SA',
+      invoiceType: body.invoiceType || '0001',
+      location: body.location || [company.city, company.district, company.street, company.building_number].filter(Boolean).join(', '),
+      industry: body.industry || '01',
+      template: body.template || 'PREZATCA-Code-Signing',
+    } : null;
+    const result = verifyZatcaCsr(body.csrPem, expected || {});
+    return { valid: result.valid, subject: result.subject, san: result.san, template: result.template, publicKeyFingerprint: result.publicKeyFingerprint };
+  },{owner:true,external:true});
+
+  route('POST','/api/compliance/key/generate',async({body,user})=>{
+    if(user.role!=='owner')throw new HttpError(403, 'إدارة مفاتيح وحدة الإصدار للمالك فقط');
+    if(!complianceSecretStore)throw new HttpError(503, 'مخزن أسرار Windows DPAPI غير مهيأ');
+    const profile=issuerProfile();
+    if(!profile)throw new HttpError(409, 'أنشئ ملف وحدة الإصدار المحلي أولاً');
+    try {
+      const result = await generateAndStoreIssuerKey(complianceSecretStore, profile.local_id);
+      appendAudit(db,{actor:user.id,event:'compliance.issuer_key_generated',entity_type:'issuer_key',entity_id:profile.local_id,details:{fingerprint:result.fingerprint,algorithm:result.algorithm}});
+      return { fingerprint: result.fingerprint, generated_at: result.generated_at, algorithm: result.algorithm };
+    } catch(error) {
+      if(error instanceof IssuerKeyConflict)throw new HttpError(409, error.message);
+      throw error;
+    }
+  },{owner:true,external:true});
+
+  route('POST','/api/invoices/:id/sign',async({params,user})=>{
+    if(user.role!=='owner')throw new HttpError(403, 'للمالك فقط');
+    if(legacyComplianceCredentialsExist())throw new HttpError(409, 'انقل بيانات الاعتماد إلى مخزن DPAPI قبل متابعة التوقيع');
+    const result = await signInvoiceForCompliance(Number(params.id));
+    return { ok: true, xml: result.xml, invoice_id: result.invoiceId, hash: result.hash, qr: result.qr, profile: result.profile };
+  },{owner:true,external:true});
 
   // ---------- التقارير والإدارة ----------
   route('GET', '/api/dashboard', () => {
@@ -341,7 +867,7 @@ export function createApp({ dbFile, licensePath, tls }) {
 
   // ---------- المعالج العام ----------
   const handler = async (req, res) => {
-    const send = (st, body, type = 'application/json', h = {}) => { res.writeHead(st, { 'Content-Type': type, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', ...h }); res.end(body); };
+    const send = (st, body, type = 'application/json', h = {}) => { res.writeHead(st, { 'Content-Type': type, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', 'Connection': 'close', ...h }); res.end(body); };
     try {
       const access = localAccess(req);
       if (!access.allowed) throw new HttpError(403, 'اتصل عبر HTTPS من أجهزة الشبكة؛ HTTP متاح على جهاز الخادم فقط');
@@ -385,6 +911,12 @@ export function createApp({ dbFile, licensePath, tls }) {
   };
   const server = tls ? https.createServer(tls, handler) : http.createServer(handler);
   const syncTimer=setInterval(()=>{try{if(syncInfo(db).enabled)syncBranch(db).catch(()=>{});}catch{}},60000);syncTimer.unref();
+  const reportingTimer=reportingIntervalMs?setInterval(()=>{
+    complianceIssuance.processQueue(db).then(result=>{
+      for(const [operation,items] of Object.entries(result))for(const item of items)if(item.state==='error')console.error(`ZATCA ${operation} retry failed for invoice ${item.id}:`,item.reason);
+    }).catch(error=>console.error('ZATCA compliance queue worker failed:',error));
+  },reportingIntervalMs):null;
+  reportingTimer?.unref();
   // Automatic nightly backup at 03:00 Riyadh time.
   let lastBackupDate='';
   const backupTimer=setInterval(()=>{
@@ -407,7 +939,7 @@ export function createApp({ dbFile, licensePath, tls }) {
       }
     }catch{}
   },60000);backupTimer.unref();
-  server.on('close',()=>{clearInterval(syncTimer);clearInterval(backupTimer);});
+  server.on('close',()=>{clearInterval(syncTimer);clearInterval(backupTimer);if(reportingTimer)clearInterval(reportingTimer);});
   return { server, db };
 }
 

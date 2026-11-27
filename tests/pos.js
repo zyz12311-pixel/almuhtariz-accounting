@@ -8,7 +8,7 @@ await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const base=`http://127.0.0.1:${server.address().port}`;
 const call=async(method,p,body,cookie='')=>{if(p==='/api/pos/sales'&&body&&!body.request_id)body={...body,request_id:crypto.randomUUID()};const r=await fetch(base+p,{method,headers:{...(cookie?{cookie}:{}),...(body?{'content-type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});const t=await r.text();let j;try{j=JSON.parse(t)}catch{j=t}return {st:r.status,j,r};};
 try {
- assert.ok(fs.existsSync(file)); assert.equal(db.prepare('SELECT COUNT(*) n FROM schema_migrations').get().n,25);
+ assert.ok(fs.existsSync(file)); assert.equal(db.prepare('SELECT COUNT(*) n FROM schema_migrations').get().n,28);
  await call('POST','/api/setup',{username:'owner',password:'password123',company_name:'متجر',activity:'trade'});
  let login=await call('POST','/api/login',{username:'owner',password:'password123'});const owner=login.r.headers.get('set-cookie').split(';')[0];
  await call('PUT','/api/settings/company',{name_ar:'متجر',vat_number:'300000000000003',cr_number:'1234567890',street:'شارع الاختبار',building_number:'1234',district:'حي الاختبار',city:'الرياض',postal_code:'12345',country_code:'SA'},owner);
@@ -42,11 +42,12 @@ try {
  assert.equal((await call('POST','/api/pos/sales',{pos_id:1,lines:[{item_id:item,qty:1}]},cashier)).st,403);
  assert.equal((await call('POST','/api/pos/sales',{pos_id:2,lines:[{item_id:99999,qty:1}]},cashier)).st,400);
  assert.equal((await call('POST','/api/pos/sales',{pos_id:2,lines:[{item_id:item,qty:-1}]},cashier)).st,400);
- const tracked=await call('POST','/api/items',{name_ar:'صنف مخزني',unit_price:'2',track_stock:true,opening_qty:'24',base_unit:'عبوة',units:[{name:'كرتون',factor:'12',unit_price:'20',barcode:'UNIT-12'}]},owner);assert.equal(tracked.st,200,JSON.stringify(tracked.j));
+ const tracked=await call('POST','/api/items',{name_ar:'صنف مخزني',unit_price:'2',track_stock:true,opening_qty:'24',base_unit:'عبوة',units:[{name:'كرتون',factor:'12',unit_price:'20',unit_code:'CS',barcode:'UNIT-12'}]},owner);assert.equal(tracked.st,200,JSON.stringify(tracked.j));
  const saved=(await call('GET','/api/items',null,owner)).j.find(i=>i.id===tracked.j.id);assert.equal(saved.stock_qty,24);
  assert.equal((await call('POST','/api/inventory/movements',{request_id:crypto.randomUUID(),item_id:tracked.j.id,warehouse_id:1,kind:'receipt',qty:1,reason:'غير مصرح'},cashier)).st,403);
  assert.equal((await call('POST','/api/warehouses',{name:'غير مصرح'},cashier)).st,403);
  const boxed=await call('POST','/api/pos/sales',{pos_id:2,lines:[{item_id:tracked.j.id,item_unit_id:saved.units[0].id,qty:1,unit_price:0}]},cashier);assert.equal(boxed.st,200,JSON.stringify(boxed.j));
+ const boxedXml=db.prepare("SELECT content FROM invoice_documents WHERE invoice_id=? AND kind='xml_candidate'").get(boxed.j.id).content;assert.ok(boxedXml.includes('<cbc:InvoicedQuantity unitCode="CS">1</cbc:InvoicedQuantity>'));assert.ok(boxedXml.includes('<cbc:PriceAmount currencyID="SAR">20.00</cbc:PriceAmount>'));assert.ok(boxedXml.includes('<cbc:LineExtensionAmount currencyID="SAR">20.00</cbc:LineExtensionAmount>'));
  assert.equal((await call('GET','/api/items',null,owner)).j.find(i=>i.id===tracked.j.id).stock_qty,12);
 
  const sale=(lines,terms={},cookie=cashier)=>call('POST','/api/pos/sales',{pos_id:2,lines,...terms},cookie);
@@ -59,7 +60,7 @@ try {
  assert.equal((await sale([{item_id:item,qty:1,override_price:1}])).st,403);
  assert.equal((await sale([{item_id:item,qty:1,pos_discount:'10.01'}])).st,403);
  assert.equal((await call('PUT','/api/items/'+tracked.j.id,{wholesale_price:'1.50',
-  units:[{id:saved.units[0].id,name:'كرتون',factor:12,unit_price:20,wholesale_price:18,barcode:'UNIT-12'}]},owner)).st,200);
+  units:[{id:saved.units[0].id,name:'كرتون',factor:12,unit_price:20,wholesale_price:18,unit_code:'CS',barcode:'UNIT-12'}]},owner)).st,200);
 
  assert.equal((await call('PUT','/api/settings/pos_control',{require_shift:true},owner)).st,200);
  assert.match((await sale([{item_id:item,qty:1}])).j.error,/وردية/);
@@ -73,6 +74,7 @@ try {
  assert.equal(cashInvoice.subtotal,1620);
  assert.equal(cashInvoice.lines[0].list_price,1800);
  assert.equal(cashInvoice.lines[0].discount_rate,1000);
+ const cashXml=db.prepare("SELECT content FROM invoice_documents WHERE invoice_id=? AND kind='xml_candidate'").get(cash.j.id).content;assert.ok(cashXml.includes('<cbc:PriceAmount currencyID="SAR">18.00</cbc:PriceAmount>'));assert.ok(cashXml.includes('<cbc:Amount currencyID="SAR">1.80</cbc:Amount>'));assert.ok(cashXml.includes('<cbc:LineExtensionAmount currencyID="SAR">16.20</cbc:LineExtensionAmount>'));
  assert.equal((await sale([{...cashLine,pos_discount:9}],cashTerms)).st,409);
 
  const bank=await sale([{item_id:item,qty:1}],{payment:'bank',price_level:'wholesale'});
@@ -108,6 +110,7 @@ try {
  const weighedSale=await sale([weighed],{price_level:'wholesale'});
  assert.equal(weighedSale.st,200,JSON.stringify(weighedSale.j));
  assert.equal((await call('GET','/api/invoices/'+weighedSale.j.id,null,cashier)).j.subtotal,2125);
+ const weighedXml=db.prepare("SELECT content FROM invoice_documents WHERE invoice_id=? AND kind='xml_candidate'").get(weighedSale.j.id).content;assert.ok(weighedXml.includes('<cbc:InvoicedQuantity unitCode="KGM">1.25</cbc:InvoicedQuantity>'));assert.ok(weighedXml.includes('<cbc:PriceAmount currencyID="SAR">17.00</cbc:PriceAmount>'));assert.ok(weighedXml.includes('<cbc:LineExtensionAmount currencyID="SAR">21.25</cbc:LineExtensionAmount>'));
  assert.equal((await call('PUT','/api/settings/pos_scale',{mode:'price'},owner)).st,200);
  assert.equal((await scan(priceCode)).j.item.scale_qty,0.375);
  const priced={item_id:weightItem.j.id,qty:0.375,scale_code:priceCode,scale_mode:'price'};
@@ -120,6 +123,7 @@ try {
  const manual=await sale([{item_id:item,qty:1,override_price:'90',pos_discount:'5'}],{pos_id:1},owner);
  assert.equal(manual.st,200,JSON.stringify(manual.j));
  assert.equal((await call('GET','/api/invoices/'+manual.j.id,null,owner)).j.subtotal,8550);
- console.log('نجحت اختبارات الباركود وصلاحيات العامل والأسعار المعتمدة وحصر الطباعة ومواقع البيع');
+ const manualXml=db.prepare("SELECT content FROM invoice_documents WHERE invoice_id=? AND kind='xml_candidate'").get(manual.j.id).content;assert.ok(manualXml.includes('<cbc:PriceAmount currencyID="SAR">90.00</cbc:PriceAmount>'));assert.ok(manualXml.includes('<cbc:Amount currencyID="SAR">4.50</cbc:Amount>'));assert.ok(manualXml.includes('<cbc:LineExtensionAmount currencyID="SAR">85.50</cbc:LineExtensionAmount>'));
+console.log('نجحت اختبارات الباركود وصلاحيات العامل والأسعار المعتمدة وحصر الطباعة ومواقع البيع');
 } finally {server.close();db.close();}
- const reopened=openDb(file);assert.equal(reopened.prepare('SELECT COUNT(*) n FROM schema_migrations').get().n,25);assert.equal(reopened.prepare('SELECT barcode FROM items LIMIT 1').get().barcode,'0001234567890');reopened.close();
+const reopened=openDb(file);assert.equal(reopened.prepare('SELECT COUNT(*) n FROM schema_migrations').get().n,28);assert.equal(reopened.prepare('SELECT barcode FROM items LIMIT 1').get().barcode,'0001234567890');reopened.close();

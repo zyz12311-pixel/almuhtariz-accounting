@@ -21,7 +21,7 @@ try{
  // custom level
  const dist=(await call('POST','/api/price-levels',{code:'distributor',name_ar:'الموزع'},owner)).j;
  // item with unit
- const item=(await call('POST','/api/items',{name_ar:'منتج',unit_price:'100.00',wholesale_price:'60.00',vat_rate:15,base_unit:'قطعة',units:[{name:'كرتون',factor:'12',unit_price:'20.00',wholesale_price:'18.00',barcode:'UNIT-12'}]},owner)).j;
+ const item=(await call('POST','/api/items',{name_ar:'منتج',unit_price:'100.00',wholesale_price:'60.00',vat_rate:15,base_unit:'قطعة',units:[{name:'كرتون',factor:'12',unit_price:'20.00',wholesale_price:'18.00',unit_code:'CS',barcode:'UNIT-12'}]},owner)).j;
  const saved=(await call('GET','/api/items',null,owner)).j.find(i=>i.id===item.id);
  const unitId=saved.units[0].id;
  // set item-level and unit-level distributor prices
@@ -45,10 +45,12 @@ try{
  const unitSale=await sale([{item_id:item.id,item_unit_id:unitId,qty:1}],{price_level:'distributor'});
  assert.equal(unitSale.st,200);
  assert.equal(await totalOf(unitSale),1725); // 15 + 15% vat
+ const unitXml=db.prepare("SELECT content FROM invoice_documents WHERE invoice_id=? AND kind='xml_candidate'").get(unitSale.j.id).content;assert.ok(unitXml.includes('<cbc:InvoicedQuantity unitCode="CS">1</cbc:InvoicedQuantity>'));assert.ok(unitXml.includes('<cbc:PriceAmount currencyID="SAR">15.00</cbc:PriceAmount>'));assert.ok(unitXml.includes('<cbc:LineExtensionAmount currencyID="SAR">15.00</cbc:LineExtensionAmount>'));
  // item-level price applies for base unit sale (80)
  const baseSale=await sale([{item_id:item.id,qty:1}],{price_level:'distributor'});
  assert.equal(baseSale.st,200);
  assert.equal(await totalOf(baseSale),9200); // 80 + 15% vat
+ const baseXml=db.prepare("SELECT content FROM invoice_documents WHERE invoice_id=? AND kind='xml_candidate'").get(baseSale.j.id).content;assert.ok(baseXml.includes('<cbc:PriceAmount currencyID="SAR">80.00</cbc:PriceAmount>'));assert.ok(baseXml.includes('<cbc:LineExtensionAmount currencyID="SAR">80.00</cbc:LineExtensionAmount>'));
  // party price list with validity
  const party=(await call('POST','/api/parties',{name_ar:'عميل قائمة',kind:'customer'},owner)).j.id;
  assert.equal((await call('POST','/api/parties/'+party+'/price-lists',{level_id:dist.id,valid_from:'2026-01-01',valid_to:'2026-12-31'},owner)).st,200);
