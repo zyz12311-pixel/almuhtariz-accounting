@@ -4,6 +4,7 @@ node_modules/
 .wrangler/
 releases/
 server/zatca/java/build/
+tools/zatca-lib/
 *.db
 *.db-wal
 *.db-shm

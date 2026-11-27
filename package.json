@@ -20,6 +20,7 @@
     "license:sign": "node tools/make-license.js sign",
     "test:safety": "node --no-warnings tests/safety.js",
     "build:zatca-xmlsec": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-zatca-xmlsec.ps1",
+    "build:zatca-deps": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/fetch-zatca-deps.ps1",
     "test:zatca-c14n-sdk": "node --no-warnings tests/zatca-c14n-sdk.js",
     "init:local": "node --no-warnings tools/init-local.js",
     "compliance:samples": "node --no-warnings tools/generate-compliance-samples.js",
