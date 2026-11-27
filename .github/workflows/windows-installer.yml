@@ -35,6 +35,23 @@ jobs:
           if (Get-ChildItem $stage -Recurse -File -Include '*.pfx','*.p12','*.db','*.key','credentials*.json','csid*.json','zatca-einvoicing-sdk-*.jar') { throw 'Unexpected sensitive or SDK file in package' }
       - shell: pwsh
         run: |
+          npm install --prefix "$env:RUNNER_TEMP/desktop-tools" --no-audit --no-fund --save-exact electron@39.8.5 rcedit@4.0.1
+          if ($LASTEXITCODE -ne 0) { throw 'Electron dependency installation failed' }
+          Copy-Item "$env:RUNNER_TEMP/desktop-tools/node_modules/electron/dist/*" installer-stage -Recurse -Force
+          Rename-Item installer-stage/electron.exe Almuhtariz.exe
+          New-Item -ItemType Directory -Force installer-stage/resources/app | Out-Null
+          Copy-Item installer/desktop.cjs installer-stage/resources/app/main.cjs
+          '{"name":"almuhtariz-desktop","version":"0.10.0","main":"main.cjs"}' | Set-Content installer-stage/resources/app/package.json -Encoding ascii
+          python -m pip install Pillow
+          if ($LASTEXITCODE -ne 0) { throw 'Icon tool installation failed' }
+          python -c "from PIL import Image; Image.open('web/assets/almuhtariz-logo.png').convert('RGBA').resize((256,256)).save('installer-stage/app.ico', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+          if ($LASTEXITCODE -ne 0) { throw 'Icon conversion failed' }
+          $editor = Get-ChildItem "$env:RUNNER_TEMP/desktop-tools/node_modules/rcedit" -Recurse -Filter rcedit-x64.exe | Select-Object -First 1
+          if (!$editor) { throw 'Missing icon resource editor' }
+          & $editor.FullName installer-stage/Almuhtariz.exe --set-icon installer-stage/app.ico
+          if ($LASTEXITCODE -ne 0) { throw 'Executable icon update failed' }
+      - shell: pwsh
+        run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (!(Test-Path $iscc)) { choco install innosetup -y --no-progress; if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed' } }
           & $iscc installer/setup.iss
@@ -61,8 +78,19 @@ jobs:
             }
             if (!$ok -or !(Test-Path "$env:ALMUHTARIZ_DATA/smartz.db")) { throw 'Installed application failed startup' }
           } finally { Stop-Process -Id $server.Id -ErrorAction SilentlyContinue }
+      - shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP 'Almuhtariz-install-test'
+          $desktop = Start-Process "$target/Almuhtariz.exe" -PassThru
+          try {
+            Start-Sleep -Seconds 15
+            $desktop.Refresh()
+            if ($desktop.HasExited -or $desktop.MainWindowHandle -eq 0) { throw 'Desktop window did not open' }
+          } finally {
+            if (!$desktop.HasExited) { $desktop.CloseMainWindow() | Out-Null; if (!$desktop.WaitForExit(15000)) { Stop-Process -Id $desktop.Id -Force; throw 'Desktop shutdown timed out' } }
+          }
       - uses: actions/upload-artifact@v4
         with:
-          name: Al-Muhtariz-Accounting-unsigned-test-installer
+          name: Al-Muhtariz-Accounting-desktop-test-installer
           path: dist/Al-Muhtariz-Accounting-Setup.exe
           if-no-files-found: error
