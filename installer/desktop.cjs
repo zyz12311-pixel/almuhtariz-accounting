@@ -1,14 +1,15 @@
-const {app,BrowserWindow,dialog,session}=require('electron');
+const {app,BrowserWindow,dialog,session,ipcMain}=require('electron');
 const {spawn}=require('node:child_process');
 const path=require('node:path');
 const fs=require('node:fs');
 const http=require('node:http');
 const net=require('node:net');
 const root=path.resolve(__dirname,'..','..');
-let child,win,printWin,quitting=false;
+let child,win,printWin,quitting=false,serverPort;
 function port(){return new Promise((resolve,reject)=>{const s=net.createServer();s.once('error',reject);s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolve(p));});});}
 async function start(){
   const p=await port();
+  serverPort=p;
   const url='http://127.0.0.1:'+p;
   const data=path.join(process.env.LOCALAPPDATA,'Almuhtariz','data');
   fs.mkdirSync(data,{recursive:true});
@@ -75,7 +76,13 @@ function createPrintWindow(invoiceId,profile,printUrl){
 }
 if(!app.requestSingleInstanceLock())app.quit();else{
   app.on('second-instance',()=>{if(win){if(win.isMinimized())win.restore();win.focus();}});
-  app.whenReady().then(start).catch(e=>{dialog.showErrorBox('Almuhtariz Accounting',String(e));app.quit();});
+  app.whenReady().then(()=>{
+    ipcMain.on('print:invoice',(_,{invoiceId,profile})=>{
+      const printUrl=`http://127.0.0.1:${serverPort}/api/invoices/${invoiceId}/html?profile=${profile||'accountant'}`;
+      createPrintWindow(invoiceId,profile||'accountant',printUrl);
+    });
+    start().catch(e=>{dialog.showErrorBox('Almuhtariz Accounting',String(e));app.quit();});
+  });
   app.on('window-all-closed',()=>app.quit());
   app.on('before-quit',()=>{quitting=true;if(child)child.kill();});
 }
