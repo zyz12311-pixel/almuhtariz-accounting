@@ -1,12 +1,16 @@
+#ifndef AppBuildVersion
+  #error "AppBuildVersion is required"
+#endif
 [Setup]
 AppId=AlmuhtarizAccounting
 AppName=Almuhtariz Accounting
-AppVersion=0.10.0-dev
+AppVersion={#AppBuildVersion}
+VersionInfoVersion={#AppBuildVersion}
 DefaultDirName={localappdata}\Programs\AlmuhtarizAccounting
 DefaultGroupName=Almuhtariz Accounting
 PrivilegesRequired=lowest
 OutputDir=..\dist
-OutputBaseFilename=Al-Muhtariz-Accounting-Setup
+OutputBaseFilename=Al-Muhtariz-Accounting-Setup-{#AppBuildVersion}
 SetupIconFile=..\installer-stage\app.ico
 UninstallDisplayIcon={app}\app.ico
 Compression=lzma2

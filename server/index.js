@@ -49,6 +49,7 @@ import { createTransport } from './zatca/transport.js';
 import { extractZatcaQr } from './zatca/qr.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const appVersion = JSON.parse(fs.readFileSync(path.join(here,'..','package.json'),'utf8').replace(/^\uFEFF/, '')).version;
 const WEB = path.join(here, '..', 'web');
 class HttpError extends Error { constructor(s, m) { super(m); this.status = s; } }
 class Raw { constructor(body, type = 'text/html; charset=utf-8', headers = {}) { Object.assign(this, { body, type, headers }); } }
@@ -274,10 +275,10 @@ export function createApp({ dbFile, licensePath, tls, complianceIssuance = null,
   route('POST','/api/sync/run',()=>syncBranch(db),{owner:true,external:true});
 
   // ---------- الصحة ----------
-  route('GET','/api/health',()=>({ok:true,db:true,version:'0.10.0-dev',sync:syncStatus(),license:lic(),activity:getSetting(db,'company').activity||'trade',installation:db.prepare('SELECT id FROM installation LIMIT 1').get()?.id||null}),{open:true});
+  route('GET','/api/health',()=>({ok:true,db:true,version:appVersion,sync:syncStatus(),license:lic(),activity:getSetting(db,'company').activity||'trade',installation:db.prepare('SELECT id FROM installation LIMIT 1').get()?.id||null}),{open:true});
 
   // ---------- المصادقة ----------
-  route('GET', '/api/state', ({ user }) => ({ setup_needed: !isSetup(), user, license: lic(), today: nowRiyadh().date, sync: user && user.role!=='staff' ? syncStatus() : null, activity: user ? (user.role==='staff'?'trade':getSetting(db, 'company').activity) : '', installation_id: user ? db.prepare('SELECT id FROM installation LIMIT 1').get().id : null }), { open: true, cashier: true });
+  route('GET', '/api/state', ({ user }) => ({ setup_needed: !isSetup(), user, version:appVersion, license: lic(), today: nowRiyadh().date, sync: user && user.role!=='staff' ? syncStatus() : null, activity: user ? (user.role==='staff'?'trade':getSetting(db, 'company').activity) : '', installation_id: user ? db.prepare('SELECT id FROM installation LIMIT 1').get().id : null }), { open: true, cashier: true });
   route('POST', '/api/setup', ({ body }) => {
     if (isSetup()) throw new HttpError(403, 'تم الإعداد مسبقًا');
     need(body.username && String(body.password || '').length >= 8, 'اسم المستخدم مطلوب وكلمة المرور 8 أحرف على الأقل');

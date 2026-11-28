@@ -19,6 +19,15 @@ jobs:
           distribution: temurin
           java-version: '11'
       - run: npm ci
+      - shell: pwsh
+        run: |
+          $run = [int]$env:GITHUB_RUN_NUMBER
+          $attempt = [int]$env:GITHUB_RUN_ATTEMPT
+          if ($attempt -ge 100 -or $run -gt 655) { throw 'Build version range exhausted' }
+          $version = "0.10.$($run * 100 + $attempt)"
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+          npm version $version --no-git-tag-version --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw 'Version stamping failed' }
       - run: npm run build:zatca-deps
       - shell: pwsh
         run: |
@@ -41,26 +50,29 @@ jobs:
           Rename-Item installer-stage/electron.exe Almuhtariz.exe
           New-Item -ItemType Directory -Force installer-stage/resources/app | Out-Null
           Copy-Item installer/desktop.cjs installer-stage/resources/app/main.cjs
-          '{"name":"almuhtariz-desktop","version":"0.10.0","main":"main.cjs"}' | Set-Content installer-stage/resources/app/package.json -Encoding ascii
+          @{name='almuhtariz-desktop';version=$env:APP_VERSION;main='main.cjs'} | ConvertTo-Json -Compress | Set-Content installer-stage/resources/app/package.json -Encoding ascii
           python -m pip install Pillow
           if ($LASTEXITCODE -ne 0) { throw 'Icon tool installation failed' }
           python -c "from PIL import Image; Image.open('web/assets/almuhtariz-logo.png').convert('RGBA').resize((256,256)).save('installer-stage/app.ico', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
           if ($LASTEXITCODE -ne 0) { throw 'Icon conversion failed' }
           $editor = Get-ChildItem "$env:RUNNER_TEMP/desktop-tools/node_modules/rcedit" -Recurse -Filter rcedit-x64.exe | Select-Object -First 1
           if (!$editor) { throw 'Missing icon resource editor' }
-          & $editor.FullName installer-stage/Almuhtariz.exe --set-icon installer-stage/app.ico
+          & $editor.FullName installer-stage/Almuhtariz.exe --set-icon installer-stage/app.ico --set-file-version $env:APP_VERSION --set-product-version $env:APP_VERSION
           if ($LASTEXITCODE -ne 0) { throw 'Executable icon update failed' }
       - shell: pwsh
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (!(Test-Path $iscc)) { choco install innosetup -y --no-progress; if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed' } }
-          & $iscc installer/setup.iss
+          & $iscc "/DAppBuildVersion=$env:APP_VERSION" installer/setup.iss
           if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
       - shell: pwsh
         run: |
           $target = Join-Path $env:RUNNER_TEMP 'Almuhtariz-install-test'
-          $p = Start-Process dist/Al-Muhtariz-Accounting-Setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=$target" -Wait -PassThru
+          $p = Start-Process "dist/Al-Muhtariz-Accounting-Setup-$env:APP_VERSION.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=$target" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "Installer exit $($p.ExitCode)" }
+          $pkg = Get-Content "$target/package.json" -Raw | ConvertFrom-Json
+          $desktopPkg = Get-Content "$target/resources/app/package.json" -Raw | ConvertFrom-Json
+          if ($pkg.version -ne $env:APP_VERSION -or $desktopPkg.version -ne $env:APP_VERSION) { throw 'Installed version mismatch' }
           $env:ALMUHTARIZ_DATA = Join-Path $env:RUNNER_TEMP 'Almuhtariz-test-data'
           $env:ZATCA_JAVA = "$target/runtime/java/bin/java.exe"
           $env:ZATCA_XMLSEC_HELPER_DIR = "$target/server/zatca/java/build"
@@ -76,6 +88,7 @@ jobs:
               try { $response = Invoke-WebRequest http://127.0.0.1:19301/ -TimeoutSec 3; if ($response.StatusCode -eq 200) { $ok=$true; break } } catch {}
               Start-Sleep -Seconds 1
             }
+            if ($ok) { $health = Invoke-RestMethod http://127.0.0.1:19301/api/health; if ($health.version -ne $env:APP_VERSION) { throw 'Server version mismatch' } }
             if (!$ok -or !(Test-Path "$env:ALMUHTARIZ_DATA/smartz.db")) { throw 'Installed application failed startup' }
           } finally { Stop-Process -Id $server.Id -ErrorAction SilentlyContinue }
       - shell: pwsh
@@ -91,6 +104,6 @@ jobs:
           }
       - uses: actions/upload-artifact@v4
         with:
-          name: Al-Muhtariz-Accounting-desktop-test-installer
-          path: dist/Al-Muhtariz-Accounting-Setup.exe
+          name: Al-Muhtariz-Accounting-desktop-test-installer-${{ env.APP_VERSION }}
+          path: dist/Al-Muhtariz-Accounting-Setup-${{ env.APP_VERSION }}.exe
           if-no-files-found: error
