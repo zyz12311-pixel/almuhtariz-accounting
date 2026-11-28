@@ -84,9 +84,14 @@ assert.ok(pv.includes('data-v='), 'QR موجود دائمًا'); ok('رمز QR �
 
 assert.equal((await call('POST', '/api/users', { username: 'cashier', password: 'password123', role: 'staff' })).st, 200);
 const sl = await call('POST', '/api/login', { username: 'cashier', password: 'password123' });
+assert.equal((await call('GET','/api/parties',null,cookie)).st,401); ok('تسجيل الدخول الجديد يبطل الجلسة السابقة');
+assert.ok(!/Max-Age|Expires/i.test(sl.r.headers.get('set-cookie')));
 const sc = sl.r.headers.get('set-cookie').split(';')[0];
 assert.equal((await call('PUT', '/api/settings/ui', { theme: 'dark' }, sc)).st, 403);
 assert.equal((await call('GET', '/api/backup', null, sc)).st, 403); ok('الموظف لا يغيّر الإعدادات ولا ينزّل النسخ الاحتياطية');
+const ownerAgain = await call('POST','/api/login',{username:'owner',password:'password123'},'');
+assert.equal(ownerAgain.st,200);
+cookie=ownerAgain.r.headers.get('set-cookie').split(';')[0];
 assert.equal((await call('POST', '/api/users', { username: 'c2', password: 'password123', role: 'staff' })).st, 403); ok('حد المستخدمين في الترخيص التجريبي يعمل (2)');
 
 const bk = await call('GET', '/api/backup', null, cookie, true);
