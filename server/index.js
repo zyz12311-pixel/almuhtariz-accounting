@@ -117,7 +117,7 @@ export function createApp({ dbFile, licensePath, tls, complianceIssuance = null,
   if (complianceIssuance) {
     // Use provided compliance issuance (e.g., for testing with mock transport)
     complianceIssuanceInstance = complianceIssuance;
-  } else if (complianceSecretStore) {
+  } else if (complianceSecretStore && getSetting(db, 'compliance').mode !== 'development') {
     const signPrebuiltInvoiceXml = async (db, invoiceXml, invoiceId) => {
       const profile = issuerProfile();
       if (!profile) throw new HttpError(409, 'أنشئ ملف وحدة الإصدار المحلي أولاً');
@@ -173,7 +173,7 @@ export function createApp({ dbFile, licensePath, tls, complianceIssuance = null,
       const profile = issuerProfile();
       if (!profile) return { state: 'unconfigured', expiresAt: null, message: 'ملف وحدة الإصدار غير مهيأ' };
       const stored = await storedCredentialState(profile.local_id);
-      if (!stored.has_certificate || !stored.has_private_key) return { state: 'missing', expiresAt: null, message: 'الشهادة أو المفتاح غير مهيأ' };
+      if (!stored.issuer_matches || !stored.has_certificate || !stored.has_private_key) return { state: 'missing', expiresAt: null, message: 'الشهادة أو المفتاح غير مهيأ' };
       return { state: 'valid', expiresAt: stored.certificate_expires_at, message: 'الشهادة والمفتاح مهيأان محلياً' };
     };
     complianceIssuanceInstance = createComplianceIssuance({ signer, validateXml, transport, certificateStatus });
@@ -419,7 +419,7 @@ export function createApp({ dbFile, licensePath, tls, complianceIssuance = null,
   route('GET','/api/pos/shifts',({user})=>db.prepare('SELECT * FROM pos_shifts '+(user.role==='staff'?'WHERE user_id=? ':'')+'ORDER BY id DESC').all(...(user.role==='staff'?[user.id]:[])).map(s=>shiftSummary(db,s)),{cashier:true});
   route('POST','/api/pos/shifts',({body,user})=>openShift(db,user,body),{cashier:true});
   route('POST','/api/pos/shifts/:id/close',({params,body,user})=>closeShift(db,user,params.id,body),{cashier:true});
-  route('POST','/api/pos/returns',({body,user})=>{const result=posReturn(db,user,complianceIssuance?{...body,deferIssue:true}:body);return complianceIssuance?complianceIssuance.issue(db,result.id).then(issued=>({...issued,replayed:result.replayed})):result;},{cashier:true,external:Boolean(complianceIssuance)});
+  route('POST','/api/pos/returns',({body,user})=>{const result=posReturn(db,user,complianceIssuanceInstance?{...body,deferIssue:true}:body);return complianceIssuanceInstance?complianceIssuanceInstance.issue(db,result.id).then(issued=>({...issued,replayed:result.replayed})):result;},{cashier:true,external:Boolean(complianceIssuanceInstance)});
   route('GET','/api/pos/shifts/page',({user,query})=>shiftList(db,user,query),{cashier:true});
   route('GET','/api/pos/control',()=>getSetting(db,'pos_control'),{cashier:true});
   route('GET','/api/stocktakes',()=>db.prepare('SELECT s.*,w.name warehouse FROM stocktakes s JOIN warehouses w ON w.id=s.warehouse_id ORDER BY s.id DESC').all());
@@ -431,7 +431,7 @@ export function createApp({ dbFile, licensePath, tls, complianceIssuance = null,
   route('GET','/api/pos/customers',()=>db.prepare("SELECT id,name_ar FROM parties WHERE kind IN ('customer','both') ORDER BY name_ar").all(),{cashier:true});
   route('GET','/api/pos/points',({user})=>user.role==='staff'?db.prepare('SELECT p.* FROM pos_points p JOIN pos_user_access a ON a.pos_id=p.id WHERE a.user_id=? AND p.active=1 ORDER BY p.id').all(user.id):db.prepare('SELECT * FROM pos_points WHERE active=1 ORDER BY id').all(),{cashier:true});
   route('GET','/api/pos/pricing',({user})=>posPricing(db,user),{cashier:true});
-  route('POST','/api/pos/sales',({user,body})=>{const id=createPosSale(db,user,complianceIssuance?{...body,deferIssue:true}:body);return complianceIssuance?complianceIssuance.issue(db,id):{id};},{cashier:true,external:Boolean(complianceIssuance)});
+  route('POST','/api/pos/sales',({user,body})=>{const id=createPosSale(db,user,complianceIssuanceInstance?{...body,deferIssue:true}:body);return complianceIssuanceInstance?complianceIssuanceInstance.issue(db,id):{id};},{cashier:true,external:Boolean(complianceIssuanceInstance)});
 
   // ---------- الفروع ونقاط البيع (بحدود الترخيص) ----------
   route('GET', '/api/pos', () => db.prepare('SELECT * FROM pos_points ORDER BY id').all());
@@ -507,22 +507,22 @@ export function createApp({ dbFile, licensePath, tls, complianceIssuance = null,
   route('GET', '/api/invoices', () => db.prepare(`SELECT i.id,i.number,i.type,i.document_code,i.invoice_kind,i.environment,i.status,i.issue_date,i.total,p.name_ar party FROM invoices i
     LEFT JOIN parties p ON p.id=i.party_id ORDER BY i.id DESC`).all().map(r => ({ ...r, total: fromCents(r.total) })));
   route('POST', '/api/invoices', ({ body, user }) => {
-    if(complianceIssuance&&!body.draft){
+    if(complianceIssuanceInstance&&!body.draft){
       const request=createIdempotentIssueRequest(db,user.id,'invoice',body.request_id,body,()=>createInvoice(db,user.id,{...body,draft:true}));
-      return complianceIssuance.issue(db,request.id).then(result=>({...result,replayed:request.replayed||result.replayed}));
+      return complianceIssuanceInstance.issue(db,request.id).then(result=>({...result,replayed:request.replayed||result.replayed}));
     }
     return {id:createInvoice(db,user.id,body)};
-  },{external:Boolean(complianceIssuance)});
+  },{external:Boolean(complianceIssuanceInstance)});
   route('GET', '/api/invoices/:id', ({ params,user }) => { const i = getInvoice(db, params.id); need(i, 'غير موجودة'); if(user.role==='staff'&&Number(i.created_by)!==user.id)throw new HttpError(403,'يمكنك عرض مبيعاتك فقط');return i; },{cashier:true});
-  route('POST', '/api/invoices/:id/issue', ({ params }) => complianceIssuance?complianceIssuance.issue(db,Number(params.id)):{id:issueInvoice(db,Number(params.id))},{external:Boolean(complianceIssuance)});
+  route('POST', '/api/invoices/:id/issue', ({ params }) => complianceIssuanceInstance?complianceIssuanceInstance.issue(db,Number(params.id)):{id:issueInvoice(db,Number(params.id))},{external:Boolean(complianceIssuanceInstance)});
   route('POST', '/api/invoices/:id/credit-note', ({ params, body, user }) => {
-    if(complianceIssuance){
+    if(complianceIssuanceInstance){
       const requestId = body.request_id || crypto.randomUUID();
       const request=createIdempotentIssueRequest(db,user.id,'credit_note',requestId,{original_id:Number(params.id),...body},()=>createCreditNote(db,user.id,Number(params.id),{...body,deferIssue:true}));
-      return complianceIssuance.issue(db,request.id).then(result=>({...result,replayed:request.replayed||result.replayed}));
+      return complianceIssuanceInstance.issue(db,request.id).then(result=>({...result,replayed:request.replayed||result.replayed}));
     }
     return {id:createCreditNote(db,user.id,Number(params.id),body)};
-  }, { accountant: true,external:Boolean(complianceIssuance) });
+  }, { accountant: true,external:Boolean(complianceIssuanceInstance) });
   route('GET', '/api/cost-centers', () => listCostCenters(db), { accountant: true });
   route('POST', '/api/cost-centers', ({ body, user }) => createCostCenter(db, body), { accountant: true });
   route('PUT', '/api/cost-centers/:id', ({ params, body }) => updateCostCenter(db, Number(params.id), body), { accountant: true });
@@ -576,7 +576,7 @@ export function createApp({ dbFile, licensePath, tls, complianceIssuance = null,
       issuer_key:issuerKey,
       certificate_migration_required:legacyComplianceCredentialsExist(),
       credential:credentialStatus(),
-      issuance_flow_configured:Boolean(complianceIssuance),
+      issuance_flow_configured:Boolean(complianceIssuanceInstance),
       counts:{cleared:counts.cleared||0,reported:counts.reported||0,pending:counts.pending||0,rejected:counts.rejected||0,blocked:counts.blocked||0},
       reporting_ready:db.prepare("SELECT COUNT(*) n FROM regulatory_queue WHERE operation='reporting' AND state='ready'").get().n,
       retries:db.prepare("SELECT COUNT(*) n FROM regulatory_queue WHERE state='retry'").get().n,
@@ -594,17 +594,17 @@ export function createApp({ dbFile, licensePath, tls, complianceIssuance = null,
   route('GET','/api/compliance/audit',()=>db.prepare('SELECT id,actor_id,event,entity_type,entity_id,hash,created_at FROM audit_events ORDER BY id DESC').all(),{owner:true});
   route('GET','/api/invoices/:id/xml',({params})=>{const d=db.prepare("SELECT d.content FROM invoice_documents d JOIN invoices i ON i.id=d.invoice_id WHERE d.invoice_id=? AND i.status='issued' AND d.kind IN ('signed_xml','cleared_xml') ORDER BY CASE d.kind WHEN 'cleared_xml' THEN 0 ELSE 1 END LIMIT 1").get(params.id);need(d,'لا يوجد XML نهائي مؤرشف لهذا المستند');return {content:d.content};},{accountant:true});
   route('POST','/api/invoices/:id/debit-note',({params,user,body})=>{
-    if(complianceIssuance){
+    if(complianceIssuanceInstance){
       const requestId = body.request_id || crypto.randomUUID();
       const request=createIdempotentIssueRequest(db,user.id,'debit_note',requestId,{original_id:Number(params.id),...body},()=>createDebitNote(db,user.id,Number(params.id),{...body,deferIssue:true}));
-      return complianceIssuance.issue(db,request.id).then(result=>({...result,replayed:request.replayed||result.replayed}));
+      return complianceIssuanceInstance.issue(db,request.id).then(result=>({...result,replayed:request.replayed||result.replayed}));
     }
     return {id:createDebitNote(db,user.id,Number(params.id),body)};
-  },{accountant:true,external:Boolean(complianceIssuance)});
-  route('POST','/api/compliance/reporting/run',async({body})=>{if(!complianceIssuance)throw new HttpError(503,'مسار الامتثال غير مهيأ');return {results:await complianceIssuance.reportReady(db,{limit:body.limit??20})};},{owner:true,external:true});
-  route('POST','/api/compliance/queue/run',async({body})=>{if(!complianceIssuance)throw new HttpError(503,'مسار الامتثال غير مهيأ');return complianceIssuance.processQueue(db,{limit:body.limit??20});},{owner:true,external:true});
+  },{accountant:true,external:Boolean(complianceIssuanceInstance)});
+  route('POST','/api/compliance/reporting/run',async({body})=>{if(!complianceIssuanceInstance)throw new HttpError(503,'مسار الامتثال غير مهيأ');return {results:await complianceIssuanceInstance.reportReady(db,{limit:body.limit??20})};},{owner:true,external:true});
+  route('POST','/api/compliance/queue/run',async({body})=>{if(!complianceIssuanceInstance)throw new HttpError(503,'مسار الامتثال غير مهيأ');return complianceIssuanceInstance.processQueue(db,{limit:body.limit??20});},{owner:true,external:true});
   route('POST','/api/compliance/queue/:id/retry',({params})=>{
-    if(!complianceIssuance)throw new HttpError(503,'مسار الامتثال غير مهيأ');
+    if(!complianceIssuanceInstance)throw new HttpError(503,'مسار الامتثال غير مهيأ');
     const updated=tx(db,()=>{
       const queue=db.prepare('SELECT state,last_error FROM regulatory_queue WHERE invoice_id=?').get(params.id);
       if(!queue)throw new HttpError(404,'طلب الامتثال غير موجود');
@@ -935,7 +935,7 @@ route('POST','/api/compliance/certificate/migrate',async()=>{
   const server = tls ? https.createServer(tls, handler) : http.createServer(handler);
   const syncTimer=setInterval(()=>{try{if(syncInfo(db).enabled)syncBranch(db).catch(()=>{});}catch{}},60000);syncTimer.unref();
   const reportingTimer=reportingIntervalMs?setInterval(()=>{
-    complianceIssuance.processQueue(db).then(result=>{
+    complianceIssuanceInstance.processQueue(db).then(result=>{
       for(const [operation,items] of Object.entries(result))for(const item of items)if(item.state==='error')console.error(`ZATCA ${operation} retry failed for invoice ${item.id}:`,item.reason);
     }).catch(error=>console.error('ZATCA compliance queue worker failed:',error));
   },reportingIntervalMs):null;
