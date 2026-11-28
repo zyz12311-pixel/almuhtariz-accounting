@@ -146,13 +146,8 @@ export function createApp({ dbFile, licensePath, tls, complianceIssuance = null,
       return { xml: result.xml, qr: result.qr, invoiceHash: result.hash, invoiceId: result.invoiceId };
     };
     const validateXml = async (xml, { operation }) => {
-      const classpath = process.env.ZATCA_XMLSEC_CLASSPATH;
-      if (!classpath || !classpath.trim()) {
-        throw new Error('التحقق الرسمي من XML يتطلب ZATCA_XMLSEC_CLASSPATH مع Apache Santuario');
-      }
-      const { hashZatcaInvoiceC14n11 } = await import('./zatca/c14n.js');
-      const xmlSha256 = hashZatcaInvoiceC14n11(xml);
-      return { passed: true, xmlSha256, operation, validatedAt: new Date().toISOString() };
+      const { validateWithOfficialSdk } = await import('./zatca/runtime-sdk.js');
+      return validateWithOfficialSdk(xml, { operation });
     };
     const complianceMode = getSetting(db, 'compliance').mode;
     let transport;
