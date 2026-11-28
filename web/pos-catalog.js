@@ -5,6 +5,15 @@ export function mountPosCatalog({ root, api, esc, money, addItem, pricing }) {
   const scanner = find('#barcode-input'), form = find('#barcode-form'), message = find('#barcode-message');
   let page = 1, timer, controller;
 
+  function focusScanner() {
+    if (typeof requestBarcodeFocus === 'function') {
+      requestBarcodeFocus();
+    } else if (scanner && !scanner.disabled && document.activeElement !== scanner) {
+      scanner.focus({ preventScroll: true });
+      scanner.select();
+    }
+  }
+
   async function load(requestedPage) {
     controller?.abort();
     const request = new AbortController();
@@ -25,7 +34,7 @@ export function mountPosCatalog({ root, api, esc, money, addItem, pricing }) {
         button.onclick = () => {
           try {
             addItem(result.rows[Number(button.dataset.product)]);
-            scanner.focus();
+            focusScanner();
           } catch (error) {
             message.textContent = error.message;
           }
@@ -60,7 +69,7 @@ export function mountPosCatalog({ root, api, esc, money, addItem, pricing }) {
     const code = scanner.value.trim();
     if (!code) return;
     scanner.value = '';
-    scanner.focus();
+    focusScanner();
     form.dataset.pending = String(++pending);
     scans = scans.then(async () => {
       if (!root.isConnected) return;

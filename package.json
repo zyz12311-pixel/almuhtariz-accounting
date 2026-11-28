@@ -6,12 +6,18 @@
   "engines": {
     "node": ">=22.13"
   },
+  "main": "electron/main.cjs",
   "dependencies": {
     "asn1js": "4.1.0",
     "@xmldom/xmldom": "0.9.12",
     "xadesjs": "3.1.0",
     "xmldsigjs": "3.1.0",
     "xpath": "0.0.35"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "playwright": "^1.45.0"
   },
   "scripts": {
     "start": "node --no-warnings server/index.js",
@@ -24,6 +30,62 @@
     "test:zatca-c14n-sdk": "node --no-warnings tests/zatca-c14n-sdk.js",
     "init:local": "node --no-warnings tools/init-local.js",
     "compliance:samples": "node --no-warnings tools/generate-compliance-samples.js",
-    "compliance:sdk": "node tools/run-official-sdk.js"
+    "compliance:sdk": "node tools/run-official-sdk.js",
+    "electron:dev": "concurrently -k -s first \"npm start\" \"wait-on http://127.0.0.1:3113 && electron electron/main.cjs\"",
+    "electron:build": "electron-builder --win --x64",
+    "electron:pack": "electron-builder --win --x64 --dir",
+    "test:e2e": "playwright test tests/e2e-electron.test.js"
+  },
+  "build": {
+    "appId": "com.almuhtariz.accounting",
+    "productName": "المحترز للمحاسبة",
+    "copyright": "Copyright © 2024 المحترز",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "server/**/*",
+      "web/**/*",
+      "electron/**/*",
+      "assets/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "tools/zatca-lib",
+        "to": "zatca-lib",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "server/zatca/java/build",
+        "to": "zatca-java",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/almuhtariz-logo.ico",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "المحترز للمحاسبة",
+      "uninstallDisplayName": "المحترز للمحاسبة وإدارة الأعمال",
+      "license": "assets/license.txt",
+      "installerIcon": "assets/almuhtariz-logo.ico",
+      "uninstallerIcon": "assets/almuhtariz-logo.ico",
+      "includeGdiplus": true,
+      "runAfterFinish": true
+    }
   }
 }

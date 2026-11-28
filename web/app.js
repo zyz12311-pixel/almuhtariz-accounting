@@ -1,7 +1,39 @@
 ﻿const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&', '<': '<', '>': '>', '"': '"', "'": "'" }[c]));
 const S = { state: null, ui: {}, parties: [], items: [], pos: [] };
+
+// Detect Electron environment
+const isElectron = typeof window !== 'undefined' && window.electronAPI?.isElectron;
+
+// Safe window.open replacement for printing
+function openPrintWindow(url) {
+  if (isElectron && window.electronAPI?.printInvoice) {
+    const match = url.match(/\/api\/invoices\/([^\/]+)\/html/);
+    const profileMatch = url.match(/profile=([^&]+)/);
+    if (match) {
+      window.electronAPI.printInvoice(match[1], profileMatch ? profileMatch[1] : 'accountant');
+      return;
+    }
+  }
+  // Fallback for browser
+  window.open(url, '_blank');
+}
+
+// Centralized focus management for barcode scanner
+let barcodeFocusScheduled = false;
+function requestBarcodeFocus() {
+  if (barcodeFocusScheduled) return;
+  barcodeFocusScheduled = true;
+  requestAnimationFrame(() => {
+    barcodeFocusScheduled = false;
+    const input = document.getElementById('barcode-input');
+    if (input && !input.disabled && document.activeElement !== input) {
+      input.focus({ preventScroll: true });
+      input.select();
+    }
+  });
+}
 function setTrackingItem(row,item){
  const previous=row.trackingItem;
  if(previous?.id!==item?.id||previous?.item_unit_id!==item?.item_unit_id)row.dataset.tracking='[]';
@@ -75,7 +107,15 @@ function shell(body) {
   $('#app').innerHTML = '<div class="shell"><nav aria-label="القائمة الرئيسية"><a class="brand" href="#'+(S.state.user.role==='staff'?'pos':'dashboard')+'"><img class="brand-logo" src="/assets/almuhtariz-logo.png" alt="شعار المحترز"><strong dir="rtl">المحترز للمحاسبة<small>وإدارة الأعمال</small></strong></a><div class="workspace-label">مساحة العمل</div><select id="workspace" aria-label="النشاط">' + Object.entries(WORKSPACES).filter(([key])=>visibleWorkspace(key)).map(([k,v])=>'<option value="'+k+'" '+(k===workspace?'selected':'')+'>'+v.name+'</option>').join('') + '</select><div class="nav-label">إدارة الأعمال</div>'+NAV.filter(([k]) => canOpenLocalPage(S.state.user.role, k)).map(([k,t])=>'<a class="'+(cur===k?'on':'')+'" href="#'+k+'" '+(cur===k?'aria-current="page"':'')+'><span class="nav-icon" aria-hidden="true">'+ICONS[k]+'</span>'+t+'</a>').join('')+'<div class="nav-bottom"><div class="profile"><span class="avatar">'+esc(S.state.user.username.slice(0,1))+'</span><div><b>'+esc(S.state.user.username)+'</b><small>'+({owner:'مالك المنشأة',accountant:'محاسب',staff:'موظف'}[S.state.user.role]||'')+'</small></div><button id="out" aria-label="تسجيل الخروج">â†ھ</button></div></div></nav><main><header class="topbar"><div><span class="eyebrow">'+esc(w.name)+'</span><span class="top-divider">/</span><span>'+esc(NAV.find(([k])=>k===cur)?.[1]||'نظرة عامة')+'</span></div><div class="top-actions"><span class="today">'+fdate(S.state.today)+'</span><a class="button p" href="#new">ï¼‹ فاتورة جديدة</a></div></header><div class="content"><div id="msg" class="msg" role="status" hidden></div><div class="development-notice">نسخة تطوير آ· المستندات تجريبية وغير صالحة للاستخدام الضريبي</div>'+body+'</div><footer class="app-footer"><span dir="rtl">المحترز للمحاسبة</span><span>تفاصيل أقل. وضوح أكثر.</span></footer></main></div>';
   if(S.state.user.role==='staff'){$('#workspace').hidden=true;$('.workspace-label').hidden=true;$('.top-actions .button').href='#pos';$('.top-actions .button').textContent='نقطة البيع';}
   $('#workspace').onchange = e => { workspace=visibleWorkspace(e.target.value)?e.target.value:'trade';localStorage.setItem('smartz.workspace',workspace); route(); };
-  $('#out').onclick = guard(async () => { await api('logout', { method: 'POST', body: {} }); await globalThis.AlmuhtarizStore?.clearScope(localScope()); location.reload(); });
+  $('#out').onclick = guard(async () => {
+    await api('logout', { method: 'POST', body: {} });
+    // Don't wait for IndexedDB cleanup - reload immediately
+    // IndexedDB cleanup happens in background if available
+    if (window.AlmuhtarizStore?.clearScope) {
+      window.AlmuhtarizStore.clearScope(localScope()).catch(() => {});
+    }
+    location.reload();
+  });
 }
 
 // ---------- الدخول والإعداد ----------
@@ -211,7 +251,7 @@ const pages = {
       const dueDate=$('#due-date')?.value||undefined; const terms=Math.max(0,Number($('#payment-terms-days')?.value||0));
       let r; try { r = await api(isPos?'pos/sales':'invoices', { method: 'POST', body: { request_id:isPos?S.saleRequestId:undefined,price_level:isPos?$('#pos-price-level')?.value:undefined,invoice_kind:$('#invoice-kind').value||undefined,supply_date:$('#supply-date').value, due_date:dueDate, payment_terms_days:terms, lines, party_id: +$('#party').value || null, pos_id: +$('#pos').value, payment: $('#pay').value, draft } }); } catch(e) { $('#issue').disabled = false; $('#draft').disabled = false; throw e; }
       if(isPos)await globalThis.AlmuhtarizStore?.remove(localScope(),'sale','drafts');
-      if (!draft) window.open(`/api/invoices/${r.id}/html?profile=${location.hash.slice(1)==='pos'||S.state.user.role==='staff'?'pos':'accountant'}`, '_blank'); if(isPos){await pages.pos();msg('تم إصدار البيع وحفظه محليًا',true);}else location.hash='invoices'; });
+      if (!draft) openPrintWindow(`/api/invoices/${r.id}/html?profile=${location.hash.slice(1)==='pos'||S.state.user.role==='staff'?'pos':'accountant'}`); if(isPos){await pages.pos();msg('تم إصدار البيع وحفظه محليًا',true);}else location.hash='invoices'; });
     const syncDue=()=>{const d=$('#supply-date')?.value||S.state.today;const terms=Math.max(0,Number($('#payment-terms-days')?.value||0));if($('#due-date')&&!$('#due-date').dataset.manual){const dt=new Date(d+'T00:00:00Z');dt.setUTCDate(dt.getUTCDate()+terms);$('#due-date').value=dt.toISOString().slice(0,10);}};
     $('#supply-date')?.addEventListener('change',()=>{if($('#due-date'))$('#due-date').dataset.manual='';syncDue();});
     $('#payment-terms-days')?.addEventListener('input',()=>{if($('#due-date'))$('#due-date').dataset.manual='';syncDue();});
@@ -327,8 +367,12 @@ const pages = {
         }
       }
     } catch(error) {
-      if(catalog.isConnected){clear.disabled=false;status.textContent='تعذرت استعادة السلة. أعد تحميل الصفحة للمحاولة مجددًا. '+error.message;}
-      return;
+      console.warn('Cart restoration failed:', error);
+      // Don't return - continue to enable UI even if restoration failed
+      if(catalog.isConnected){
+        clear.disabled=false;
+        status.textContent='تعذرت استعادة السلة السابقة. يمكنك البدء بسلة جديدة.';
+      }
     }
     if(!catalog.isConnected)return;
     restoring=false;
@@ -338,7 +382,7 @@ const pages = {
     $('#pos-search').disabled=false;
     issue.disabled=!S.pos.length;
     if(!S.pos.length)msg('لم تُعيّن لك نقطة بيع مفعلة. راجع مالك المنشأة.');
-    scanner.focus();
+    requestBarcodeFocus();
     const {mountPosCatalog}=await import('./pos-catalog.js');
     if(catalog.isConnected)await mountPosCatalog({root:catalog,api,esc,money,addItem,pricing});
   },
@@ -465,7 +509,7 @@ const tabs = {
 };
 
 // ---------- إشعار دائن ----------
-async function debitDialog(id){const d=$('#dlg');d.innerHTML='<h3>إشعار مدين · زيادة على الفاتورة الأصلية</h3><p class="hint">لخدمة إضافية خاضعة للنسبة الأساسية 15%. التصحيح بالنقص يتم بإشعار دائن.</p><label>وصف الخدمة<input id="debit-description"></label><label>القيمة قبل الضريبة<input id="debit-value" type="number" min="0.01" step="0.01"></label><label>السبب<input id="debit-reason"></label><div id="debit-error" class="msg" hidden></div><div class="row"><button class="p" id="debit-confirm">إصدار تجريبي</button><button id="debit-cancel">إلغاء</button></div>';d.showModal();$('#debit-cancel').onclick=()=>d.close();$('#debit-confirm').onclick=async()=>{try{const response=await api('invoices/'+id+'/debit-note',{method:'POST',body:{reason:$('#debit-reason').value,lines:[{description:$('#debit-description').value,qty:1,unit_price:$('#debit-value').value,vat_rate:15}]}});d.close();window.open('/api/invoices/'+response.id+'/html','_blank');pages.invoices();}catch(e){$('#debit-error').textContent=e.message;$('#debit-error').hidden=false;}};}
+async function debitDialog(id){const d=$('#dlg');d.innerHTML='<h3>إشعار مدين · زيادة على الفاتورة الأصلية</h3><p class="hint">لخدمة إضافية خاضعة للنسبة الأساسية 15%. التصحيح بالنقص يتم بإشعار دائن.</p><label>وصف الخدمة<input id="debit-description"></label><label>القيمة قبل الضريبة<input id="debit-value" type="number" min="0.01" step="0.01"></label><label>السبب<input id="debit-reason"></label><div id="debit-error" class="msg" hidden></div><div class="row"><button class="p" id="debit-confirm">إصدار تجريبي</button><button id="debit-cancel">إلغاء</button></div>';d.showModal();$('#debit-cancel').onclick=()=>d.close();$('#debit-confirm').onclick=async()=>{try{const response=await api('invoices/'+id+'/debit-note',{method:'POST',body:{reason:$('#debit-reason').value,lines:[{description:$('#debit-description').value,qty:1,unit_price:$('#debit-value').value,vat_rate:15}]}});d.close();openPrintWindow('/api/invoices/'+response.id+'/html');pages.invoices();}catch(e){$('#debit-error').textContent=e.message;$('#debit-error').hidden=false;}};}
 
 async function creditDialog(id) {
   const inv = await api('invoices/' + id), d = $('#dlg');
@@ -477,7 +521,7 @@ async function creditDialog(id) {
   for(const input of $$('[data-l]',d)){const line=inv.lines.find(l=>l.line_no===Number(input.dataset.l));attachReturnTracking({api,esc,line,input,incoming:true,onError:error=>{const out=$('#dm',d);out.textContent=error.message;out.hidden=false;}});}
   $('#ok', d).onclick = async () => { try { const lines = $$('[data-l]', d).filter(i => +i.value > 0).map(i => ({ line_no: +i.dataset.l, qty: +i.value, tracking:JSON.parse(i.dataset.tracking||'[]') }));
     if (!lines.length) throw new Error('حدد كمية واحدة على الأقل للإرجاع');
-    const r = await api(`invoices/${id}/credit-note`, { method: 'POST', body: { lines, reason: $('#rs', d).value } }); d.close(); window.open(`/api/invoices/${r.id}/html`, '_blank'); pages.invoices();
+    const r = await api(`invoices/${id}/credit-note`, { method: 'POST', body: { lines, reason: $('#rs', d).value } }); d.close(); openPrintWindow(`/api/invoices/${r.id}/html`); pages.invoices();
   } catch (e) { const m = $('#dm', d); m.textContent = e.message; m.hidden = false; } };
 }
 
@@ -488,23 +532,47 @@ async function reviewInvoice(total, count) {
   return new Promise(resolve => { let done=false; const finish=v=>{if(done)return;done=true;d.close();resolve(v);}; $('#confirm-issue',d).onclick=()=>finish(true); $('#back-to-edit',d).onclick=()=>finish(false);d.oncancel=()=>finish(false); d.onclose=()=>{if(!done){done=true;resolve(false);}}; d.showModal(); });
 }
 
+// Navigation guard to prevent race conditions
+let navigationInProgress = false;
+let pendingNavigation = null;
+
 // ---------- التشغيل ----------
 async function route() {
- if(S.state.mode==='cloud' && S.state.user){const cloud=await import('./cloud-workspace.js');return cloud.renderCloudWorkspace(S.state,api);}
- if(S.state?.user?.role==='staff'){workspace='trade';S.activitySelected=true;if(location.hash!=='#pos')history.replaceState(null,'','#pos');}
- if (!S.introComplete && sessionStorage.almuhtarizOpened !== '1') return openingScreen();
- if (!S.activitySelected) return activityScreen();
- if (!S.state.user) return authScreen();
- const role = S.state.user.role;
- const fallback = role === 'staff' ? 'pos' : 'dashboard';
- const requested = location.hash.slice(1);
- const page = canOpenLocalPage(role, requested) ? requested : fallback;
- if (requested && requested !== page) history.replaceState(null, '', '#' + page);
- try {
-   await pages[page]();
- } catch (error) {
-   shell(`<div class="msg">${esc(error.message)}</div>`);
- }
+  // If navigation is in progress, queue the new request
+  if (navigationInProgress) {
+    pendingNavigation = () => route();
+    return;
+  }
+
+  navigationInProgress = true;
+  try {
+    await doRoute();
+  } finally {
+    navigationInProgress = false;
+    if (pendingNavigation) {
+      const next = pendingNavigation;
+      pendingNavigation = null;
+      next();
+    }
+  }
+}
+
+async function doRoute() {
+  if(S.state.mode==='cloud' && S.state.user){const cloud=await import('./cloud-workspace.js');return cloud.renderCloudWorkspace(S.state,api);}
+  if(S.state?.user?.role==='staff'){workspace='trade';S.activitySelected=true;if(location.hash!=='#pos')history.replaceState(null,'','#pos');}
+  if (!S.introComplete && sessionStorage.almuhtarizOpened !== '1') return openingScreen();
+  if (!S.activitySelected) return activityScreen();
+  if (!S.state.user) return authScreen();
+  const role = S.state.user.role;
+  const fallback = role === 'staff' ? 'pos' : 'dashboard';
+  const requested = location.hash.slice(1);
+  const page = canOpenLocalPage(role, requested) ? requested : fallback;
+  if (requested && requested !== page) history.replaceState(null, '', '#' + page);
+  try {
+    await pages[page]();
+  } catch (error) {
+    shell(`<div class="msg">${esc(error.message)}</div>`);
+  }
 }
 (async () => {
   S.state = await api('state');
