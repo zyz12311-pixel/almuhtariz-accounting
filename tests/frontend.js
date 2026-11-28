@@ -33,9 +33,9 @@ for(const portal of ['owner','accountant','staff']) {
  assert.equal(env.doc.querySelector('.saas-entry').dataset.motion,'off');
  assert.equal(toggle.getAttribute('aria-pressed'),'false');
  assert.equal(env.storage.get('almuhtariz.motion'),'off');
- cards.find(card=>card.dataset.portal===portal).onclick();
+ await cards.find(card=>card.dataset.portal===portal).onclick();
  assert.equal(env.storage.get('smartz.workspace'),'trade');
- assert.equal(env.hooks.S.activitySelected,true); assert.equal(env.storage.get('almuhtariz.portal'),portal);
+ assert.equal(env.hooks.S.activitySelected,true); assert.equal(env.hooks.S.selectedPortal,portal); assert.equal(env.storage.has('almuhtariz.portal'),false);
  assert.ok(env.doc.querySelector('#go'),'Selection must reach the login/setup form');
 }
 const reduced=environment(true);await reduced.hooks.route();assert.equal(reduced.doc.querySelector('.saas-entry').dataset.motion,'off');
@@ -89,5 +89,6 @@ owner.hooks.pages.settings=async()=>owner.hooks.shell('<h1>إدارة المنش
 owner.location.hash='#settings';await owner.hooks.route();
 assert.ok(owner.app.innerHTML.includes('إدارة المنشأة'));
 assert.ok(owner.app.innerHTML.includes('href="#settings"'));
+for(const env of [owner,accountant,cashier]){const back=env.doc.querySelector('#return-portals');assert.ok(back);assert.equal(typeof back.onclick,'function');assert.equal(back.onclick,env.doc.querySelector('#out').onclick);}
 
 console.log('نجحت اختبارات إظهار النشاط التجاري فقط وحفظ التفضيل وتعطيل الحركة وتفضيل تقليل الحركة');
