@@ -1,16 +1,16 @@
 ﻿const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&', '<': '<', '>': '>', '"': '"', "'": "'" }[c]));
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const S = { state: null, ui: {}, parties: [], items: [], pos: [] };
 
 // Detect Electron environment
-const isElectron = typeof window !== 'undefined' && window.electronAPI?.isElectron;
+var isElectron = typeof window !== 'undefined' && window.electronAPI?.isElectron;
 
 // Safe window.open replacement for printing
 function openPrintWindow(url) {
   if (isElectron && window.electronAPI?.printInvoice) {
-    const match = url.match(/\/api\/invoices\/([^\/]+)\/html/);
-    const profileMatch = url.match(/profile=([^&]+)/);
+    var match = url.match(/\/api\/invoices\/([^\/]+)\/html/);
+    var profileMatch = url.match(/profile=([^&]+)/);
     if (match) {
       window.electronAPI.printInvoice(match[1], profileMatch ? profileMatch[1] : 'accountant');
       return;
@@ -367,12 +367,8 @@ const pages = {
         }
       }
     } catch(error) {
-      console.warn('Cart restoration failed:', error);
-      // Don't return - continue to enable UI even if restoration failed
-      if(catalog.isConnected){
-        clear.disabled=false;
-        status.textContent='تعذرت استعادة السلة السابقة. يمكنك البدء بسلة جديدة.';
-      }
+      if(catalog.isConnected){clear.disabled=false;status.textContent='تعذرت استعادة السلة. أعد تحميل الصفحة للمحاولة مجددًا. '+error.message;}
+      return;
     }
     if(!catalog.isConnected)return;
     restoring=false;
@@ -382,7 +378,7 @@ const pages = {
     $('#pos-search').disabled=false;
     issue.disabled=!S.pos.length;
     if(!S.pos.length)msg('لم تُعيّن لك نقطة بيع مفعلة. راجع مالك المنشأة.');
-    requestBarcodeFocus();
+    scanner.focus();
     const {mountPosCatalog}=await import('./pos-catalog.js');
     if(catalog.isConnected)await mountPosCatalog({root:catalog,api,esc,money,addItem,pricing});
   },
@@ -532,47 +528,23 @@ async function reviewInvoice(total, count) {
   return new Promise(resolve => { let done=false; const finish=v=>{if(done)return;done=true;d.close();resolve(v);}; $('#confirm-issue',d).onclick=()=>finish(true); $('#back-to-edit',d).onclick=()=>finish(false);d.oncancel=()=>finish(false); d.onclose=()=>{if(!done){done=true;resolve(false);}}; d.showModal(); });
 }
 
-// Navigation guard to prevent race conditions
-let navigationInProgress = false;
-let pendingNavigation = null;
-
 // ---------- التشغيل ----------
 async function route() {
-  // If navigation is in progress, queue the new request
-  if (navigationInProgress) {
-    pendingNavigation = () => route();
-    return;
-  }
-
-  navigationInProgress = true;
-  try {
-    await doRoute();
-  } finally {
-    navigationInProgress = false;
-    if (pendingNavigation) {
-      const next = pendingNavigation;
-      pendingNavigation = null;
-      next();
-    }
-  }
-}
-
-async function doRoute() {
-  if(S.state.mode==='cloud' && S.state.user){const cloud=await import('./cloud-workspace.js');return cloud.renderCloudWorkspace(S.state,api);}
-  if(S.state?.user?.role==='staff'){workspace='trade';S.activitySelected=true;if(location.hash!=='#pos')history.replaceState(null,'','#pos');}
-  if (!S.introComplete && sessionStorage.almuhtarizOpened !== '1') return openingScreen();
-  if (!S.activitySelected) return activityScreen();
-  if (!S.state.user) return authScreen();
-  const role = S.state.user.role;
-  const fallback = role === 'staff' ? 'pos' : 'dashboard';
-  const requested = location.hash.slice(1);
-  const page = canOpenLocalPage(role, requested) ? requested : fallback;
-  if (requested && requested !== page) history.replaceState(null, '', '#' + page);
-  try {
-    await pages[page]();
-  } catch (error) {
-    shell(`<div class="msg">${esc(error.message)}</div>`);
-  }
+ if(S.state.mode==='cloud' && S.state.user){const cloud=await import('./cloud-workspace.js');return cloud.renderCloudWorkspace(S.state,api);}
+ if(S.state?.user?.role==='staff'){workspace='trade';S.activitySelected=true;if(location.hash!=='#pos')history.replaceState(null,'','#pos');}
+ if (!S.introComplete && sessionStorage.almuhtarizOpened !== '1') return openingScreen();
+ if (!S.activitySelected) return activityScreen();
+ if (!S.state.user) return authScreen();
+ const role = S.state.user.role;
+ const fallback = role === 'staff' ? 'pos' : 'dashboard';
+ const requested = location.hash.slice(1);
+ const page = canOpenLocalPage(role, requested) ? requested : fallback;
+ if (requested && requested !== page) history.replaceState(null, '', '#' + page);
+ try {
+   await pages[page]();
+ } catch (error) {
+   shell(`<div class="msg">${esc(error.message)}</div>`);
+ }
 }
 (async () => {
   S.state = await api('state');

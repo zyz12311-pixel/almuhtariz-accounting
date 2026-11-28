@@ -2,11 +2,16 @@ const { app, BrowserWindow, shell, ipcMain, dialog, protocol, net } = require('e
 const { join } = require('path');
 const { spawn } = require('child_process');
 const isDev = process.env.NODE_ENV === 'development';
-const START_URL = isDev ? 'http://localhost:3113' : `file://${join(__dirname, '../web/index.html')}`;
+
+// Server runs HTTP on PORT+1 (e.g., 3114 when PORT=3113)
+const SERVER_PORT = 3113;
+const HTTP_PORT = SERVER_PORT + 1; // 3114
+const START_URL = isDev
+  ? `http://127.0.0.1:${HTTP_PORT}`
+  : `http://127.0.0.1:${HTTP_PORT}`;
 
 let mainWindow = null;
 let serverProcess = null;
-let serverPort = 3113;
 
 function createServer() {
   return new Promise((resolve, reject) => {
@@ -18,7 +23,7 @@ function createServer() {
     const env = {
       ...process.env,
       SMARTZ_DATA: dbDir,
-      PORT: String(serverPort),
+      PORT: String(SERVER_PORT),
       HOST: '127.0.0.1',
       NODE_ENV: 'production'
     };
@@ -42,10 +47,10 @@ function createServer() {
       reject(err);
     });
 
-    // Wait for server to be ready
+    // Wait for HTTP server to be ready (runs on PORT+1)
     const checkServer = setInterval(async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${serverPort}/api/state`);
+        const response = await fetch(`http://127.0.0.1:${HTTP_PORT}/api/state`);
         if (response.ok) {
           clearInterval(checkServer);
           resolve();
@@ -96,9 +101,13 @@ function createWindow() {
 
   // Handle external links and window.open for printing
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    // Allow printing URLs to open in external browser
+    // Allow printing URLs to open in external browser with session
     if (url.includes('/api/invoices/') && url.includes('/html')) {
-      shell.openExternal(url);
+      // Pass session cookie via URL parameter for authentication
+      const sessionCookie = getSessionCookie();
+      const separator = url.includes('?') ? '&' : '?';
+      const urlWithSession = `${url}${separator}sid=${sessionCookie}`;
+      shell.openExternal(urlWithSession);
       return { action: 'deny' };
     }
     // Allow other external links
@@ -112,7 +121,7 @@ function createWindow() {
   // Prevent navigation to external URLs
   mainWindow.webContents.on('will-navigate', (event, url) => {
     const parsedUrl = new URL(url);
-    if (parsedUrl.origin !== `http://127.0.0.1:${serverPort}`) {
+    if (parsedUrl.origin !== `http://127.0.0.1:${HTTP_PORT}`) {
       event.preventDefault();
       shell.openExternal(url);
     }
@@ -121,16 +130,33 @@ function createWindow() {
   // Handle new window creation (for target="_blank" links)
   mainWindow.webContents.on('did-create-window', (window) => {
     window.webContents.setWindowOpenHandler(({ url }) => {
-      shell.openExternal(url);
+      if (url.includes('/api/invoices/') && url.includes('/html')) {
+        const sessionCookie = getSessionCookie();
+        const separator = url.includes('?') ? '&' : '?';
+        const urlWithSession = `${url}${separator}sid=${sessionCookie}`;
+        shell.openExternal(urlWithSession);
+      } else {
+        shell.openExternal(url);
+      }
       return { action: 'deny' };
     });
   });
 
-  // Load the app
+  // Load the app from HTTP server
   mainWindow.loadURL(START_URL).catch((err) => {
     console.error('Failed to load URL:', err);
     dialog.showErrorBox('خطأ في التحميل', `تعذر تحميل التطبيق:\n${err.message}`);
   });
+}
+
+function getSessionCookie() {
+  // Get session cookie from the main window's cookie store
+  if (mainWindow) {
+    return mainWindow.webContents.session.cookies.get({ url: `http://127.0.0.1:${HTTP_PORT}`, name: 'sid' })
+      .then(cookies => cookies[0]?.value || '')
+      .catch(() => '');
+  }
+  return Promise.resolve('');
 }
 
 async function startup() {
@@ -184,12 +210,13 @@ ipcMain.handle('shell:open-external', async (event, url) => {
 });
 ipcMain.handle('shell:open-path', async (event, path) => {
   await shell.openPath(path);
-  return { success: true });
+  return { success: true };
 });
 
 // Handle print requests from renderer
-ipcMain.on('print:invoice', (event, { invoiceId, profile }) => {
-  const url = `http://127.0.0.1:${serverPort}/api/invoices/${invoiceId}/html?profile=${profile}`;
+ipcMain.on('print:invoice', async (event, { invoiceId, profile }) => {
+  const sessionCookie = await getSessionCookie();
+  const url = `http://127.0.0.1:${HTTP_PORT}/api/invoices/${invoiceId}/html?profile=${profile}&sid=${sessionCookie}`;
   shell.openExternal(url);
 });
 
