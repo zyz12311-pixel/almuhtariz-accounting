@@ -9,7 +9,7 @@ export function localAccess(req){
   return {allowed, secure, writeAllowed: allowed};
 }
 export function localCookie(token, secure, maxAge){
-  return `sid=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure?'; Secure':''}`;
+  return `sid=${token}; HttpOnly; SameSite=Lax; Path=/${maxAge==null?'':`; Max-Age=${maxAge}`}${secure?'; Secure':''}`;
 }
 export function sessionDigest(token){
   return createHash('sha256').update(token).digest('hex');

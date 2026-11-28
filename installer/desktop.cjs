@@ -25,7 +25,7 @@ async function start(){
     if(failure)throw failure;
     const ready=await new Promise(resolve=>{const req=http.get(url,res=>{res.resume();resolve(res.statusCode===200);});req.on('error',()=>resolve(false));req.setTimeout(1000,()=>req.destroy());});
     if(ready){
-      win=new BrowserWindow({width:1440,height:900,minWidth:900,minHeight:600,autoHideMenuBar:true,icon:path.join(root,'web','assets','almuhtariz-logo.png'),webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true}});
+      win=new BrowserWindow({width:1440,height:900,minWidth:900,minHeight:600,autoHideMenuBar:true,icon:path.join(root,'web','assets','almuhtariz-logo.png'),webPreferences:{partition:'almuhtariz-ephemeral',contextIsolation:true,nodeIntegration:false,sandbox:true}});
       win.webContents.setWindowOpenHandler(({url})=>{
         if(url.includes('/api/invoices/')&&url.includes('/html')){
           const invoiceId=url.split('/api/invoices/')[1].split('/')[0];

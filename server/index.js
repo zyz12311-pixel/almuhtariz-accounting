@@ -291,7 +291,7 @@ export function createApp({ dbFile, licensePath, tls, complianceIssuance = null,
     }
     return { ok: true };
   }, { open: true });
-  route('POST', '/api/login', ({ body, ip, secure }) => {
+  route('POST', '/api/login', ({ body, ip, secure, token: previousToken }) => {
     const f = fails.get(ip) || { n: 0, t: Date.now() };
     if (f.n >= 5 && Date.now() - f.t < 600000) throw new HttpError(429, 'محاولات كثيرة، حاول بعد 10 دقائق');
     const portal = body.portal == null ? '' : String(body.portal);
@@ -301,12 +301,13 @@ export function createApp({ dbFile, licensePath, tls, complianceIssuance = null,
     if (!u || !checkPass(String(body.password || ''), u.pass)) { fails.set(ip, { n: f.n + 1, t: Date.now() }); throw new HttpError(401, 'بيانات الدخول غير صحيحة'); }
     if (portal && u.role !== portal) throw new HttpError(403, 'هذا الحساب لا يطابق بوابة الدخول المختارة');
     fails.delete(ip);
+    if(previousToken)db.prepare('DELETE FROM sessions WHERE token=?').run(sessionDigest(previousToken));
     const token = crypto.randomBytes(32).toString('hex');
     db.prepare('INSERT INTO sessions(token,user_id,created_at) VALUES(?,?,?)').run(sessionDigest(token), u.id, new Date().toISOString());
-    return new Raw(JSON.stringify({ ok: true, role: u.role, destination: portals[u.role] || 'dashboard' }), 'application/json', { 'Set-Cookie': localCookie(token, secure, 2592000) });
+    return new Raw(JSON.stringify({ ok: true, role: u.role, destination: portals[u.role] || 'dashboard' }), 'application/json', { 'Set-Cookie': localCookie(token, secure) });
   }, { open: true, cashier: true });
   route('POST', '/api/logout', ({ token, secure }) => {
-    db.prepare('DELETE FROM sessions WHERE token=?').run(token);
+    if(token)db.prepare('DELETE FROM sessions WHERE token=?').run(sessionDigest(token));
     return new Raw(JSON.stringify({ok:true}), 'application/json', {'Set-Cookie':localCookie('', secure, 0)});
   }, { cashier: true });
   route('GET','/api/preferences/ui',()=>getSetting(db,'ui'),{cashier:true});
