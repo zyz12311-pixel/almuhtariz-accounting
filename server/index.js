@@ -689,7 +689,7 @@ route('POST','/api/compliance/certificate/migrate',async()=>{
   // ---------- CSID Management (Task 08) ----------
   route('GET','/api/compliance/csid',async()=>{
     const profile=issuerProfile();
-    if(!profile)throw new HttpError(409,'أنشئ ملف وحدة الإصدار المحلي أولاً');
+    if(!profile)return {compliance:null,production:null,certificate_configured:false,certificate_expires_at:null};
     const complianceCsid = db.prepare("SELECT value FROM compliance_state WHERE key='csid_compliance'").get()?.value;
     const productionCsid = db.prepare("SELECT value FROM compliance_state WHERE key='csid_production'").get()?.value;
     const certStatus = await storedCredentialState(profile.local_id);
