@@ -15,7 +15,9 @@ async function start(){
   fs.mkdirSync(data,{recursive:true});
   const libs=path.join(root,'tools','zatca-lib');
   const env={...process.env,PORT:String(p-1),ALMUHTARIZ_DATA:data,ZATCA_JAVA:path.join(root,'runtime','java','bin','java.exe'),ZATCA_XMLSEC_HELPER_DIR:path.join(root,'server','zatca','java','build'),ZATCA_XMLSEC_CLASSPATH:fs.readdirSync(libs).filter(x=>x.endsWith('.jar')).map(x=>path.join(libs,x)).join(path.delimiter)};
-  const log=fs.openSync(path.join(data,'desktop-server.log'),'a');
+  const sdkConfig=path.join(path.dirname(data),'zatca','sdk-command.json');
+ if(!env.ZATCA_SDK_COMMAND_CONFIG&&fs.existsSync(sdkConfig))env.ZATCA_SDK_COMMAND_CONFIG=sdkConfig;
+ const log=fs.openSync(path.join(data,'desktop-server.log'),'a');
   child=spawn(path.join(root,'runtime','node.exe'),['--no-warnings',path.join(root,'server','index.js')],{cwd:root,env,windowsHide:true,stdin:'ignore',stdout:log,stderr:log});
   fs.closeSync(log);
   let failure;
