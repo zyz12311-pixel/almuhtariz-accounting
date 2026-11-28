@@ -53,7 +53,7 @@ window.open = function(url, target, features) {
 // Provide a stable origin for localStorage/IndexedDB regardless of port
 // This is handled by the server running on a fixed port in Electron
 Object.defineProperty(window, 'ELECTRON_FIXED_ORIGIN', {
-  value: `http://127.0.0.1:3113`,
+  value: `http://127.0.0.1:3114`,
   writable: false,
   configurable: false
 });
