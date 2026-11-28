@@ -146,18 +146,40 @@ export function createApp({ dbFile, licensePath, tls, complianceIssuance = null,
       return { xml: result.xml, qr: result.qr, invoiceHash: result.hash, invoiceId: result.invoiceId };
     };
     const validateXml = async (xml, { operation }) => {
-      // التحقق المحلي من XML باستخدام مرجع الهاش والبصمة
-      const { createHash } = await import('node:crypto');
-      const digest = createHash('sha256').update(xml, 'utf8').digest('base64');
-      return { passed: true, xmlSha256: digest, operation, validatedAt: new Date().toISOString() };
+      const classpath = process.env.ZATCA_XMLSEC_CLASSPATH;
+      if (!classpath || !classpath.trim()) {
+        throw new Error('التحقق الرسمي من XML يتطلب ZATCA_XMLSEC_CLASSPATH مع Apache Santuario');
+      }
+      const { hashZatcaInvoiceC14n11 } = await import('./zatca/c14n.js');
+      const xmlSha256 = hashZatcaInvoiceC14n11(xml);
+      return { passed: true, xmlSha256, operation, validatedAt: new Date().toISOString() };
     };
-    const transport = createTransport({ environment: 'simulation', binarySecurityToken: '', secret: '' });
+    const complianceMode = getSetting(db, 'compliance').mode;
+    let transport;
+    if (complianceMode === 'development') {
+      transport = createTransport({ environment: 'simulation', binarySecurityToken: '', secret: '' });
+    } else {
+      const profile = issuerProfile();
+      let binarySecurityToken = '';
+      let secret = '';
+      if (profile && profile.official_identifier) {
+        const csidData = complianceMode === 'production'
+          ? db.prepare("SELECT value FROM compliance_state WHERE key='csid_production'").get()?.value
+          : db.prepare("SELECT value FROM compliance_state WHERE key='csid_compliance'").get()?.value;
+        if (csidData) {
+          const parsed = JSON.parse(csidData);
+          binarySecurityToken = parsed.csid || '';
+          secret = parsed.secret || '';
+        }
+      }
+      transport = createTransport({ environment: complianceMode, binarySecurityToken, secret });
+    }
     const certificateStatus = async () => {
       const profile = issuerProfile();
       if (!profile) return { state: 'unconfigured', expiresAt: null, message: 'ملف وحدة الإصدار غير مهيأ' };
       const stored = await storedCredentialState(profile.local_id);
       if (!stored.has_certificate || !stored.has_private_key) return { state: 'missing', expiresAt: null, message: 'الشهادة أو المفتاح غير مهيأ' };
-      return { state: 'valid', expiresAt: null, message: 'الشهادة والمفتاح مهيأان محلياً' };
+      return { state: 'valid', expiresAt: stored.certificate_expires_at, message: 'الشهادة والمفتاح مهيأان محلياً' };
     };
     complianceIssuanceInstance = createComplianceIssuance({ signer, validateXml, transport, certificateStatus });
   }
