@@ -70,7 +70,7 @@ assert.equal((await call('GET', '/api/reports/trial-balance')).j.balanced, true)
 assert.equal((await call('GET', '/api/dashboard')).j.month, today.slice(0, 7)); ok('لوحة التحكم تستخدم شهر الرياض');
 
 r = await call('POST', '/api/pos', { name: 'نقطة 2', prefix: 'B' });
-assert.equal(r.st, 403); assert.match(r.j.error, /الحد المرخّص/); ok('الترخيص التجريبي يمنع نقطة بيع ثانية');
+assert.equal(r.st, 200); ok('النسخة التجريبية تتيح نقطة بيع ثانية');
 
 const png = 'data:image/png;base64,iVBORw0KGgo=';
 assert.equal((await call('PUT', '/api/settings/invoice', { logo: 'javascript:alert(1)' })).st, 400);
@@ -92,7 +92,11 @@ assert.equal((await call('GET', '/api/backup', null, sc)).st, 403); ok('المو
 const ownerAgain = await call('POST','/api/login',{username:'owner',password:'password123'},'');
 assert.equal(ownerAgain.st,200);
 cookie=ownerAgain.r.headers.get('set-cookie').split(';')[0];
-assert.equal((await call('POST', '/api/users', { username: 'c2', password: 'password123', role: 'staff' })).st, 403); ok('حد المستخدمين في الترخيص التجريبي يعمل (2)');
+assert.equal((await call('POST', '/api/users', { username: 'c2', password: 'password123', role: 'staff' })).st, 200);
+assert.equal((await call('POST', '/api/users', { username: 'accountant2', password: 'password123', role: 'accountant' })).st, 200);
+const users=(await call('GET','/api/users')).j;
+assert.deepEqual(users.find(u=>u.username==='cashier').pos_ids,users.find(u=>u.username==='c2').pos_ids);
+ok('حسابات مستقلة لعدة بائعين على نقطة واحدة دون حد المستخدمين');
 
 const bk = await call('GET', '/api/backup', null, cookie, true);
 assert.equal(Buffer.from(await bk.arrayBuffer()).subarray(0, 15).toString(), 'SQLite format 3'); ok('نسخة احتياطية صالحة بصيغة SQLite');

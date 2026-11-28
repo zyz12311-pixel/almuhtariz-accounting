@@ -437,7 +437,7 @@ export function createApp({ dbFile, licensePath, tls, complianceIssuance = null,
   route('GET', '/api/pos', () => db.prepare('SELECT * FROM pos_points ORDER BY id').all());
   route('POST', '/api/pos', ({ body }) => {
     const L = lic(), n = db.prepare('SELECT COUNT(*) n FROM pos_points WHERE active=1').get().n;
-    if (n >= L.max_pos) throw new HttpError(403, `بلغت الحد المرخّص من نقاط البيع (${L.max_pos}). رقّ الترخيص لإضافة نقاط.`);
+    if (L.max_pos !== null && n >= L.max_pos) throw new HttpError(403, `بلغت الحد المرخّص من نقاط البيع (${L.max_pos}). رقّ الترخيص لإضافة نقاط.`);
     const prefix = String(body.prefix || '').toUpperCase();
     need(/^[A-Z0-9]{1,6}$/.test(prefix) && body.name, 'الاسم مطلوب والبادئة 1-6 أحرف إنجليزية أو أرقام');
     const activity=body.activity===undefined?companyActivity(db):validateActivity(body.activity);
@@ -451,6 +451,10 @@ export function createApp({ dbFile, licensePath, tls, complianceIssuance = null,
     if (activity!==point.activity && db.prepare('SELECT 1 FROM pos_shifts WHERE pos_id=? AND closed_at IS NULL').get(point.id)) {
       throw new HttpError(409,'أغلق وردية نقطة البيع قبل تغيير نشاطها');
     }
+    if (active && !point.active) {
+      const L = lic();
+      if (L.max_pos !== null && db.prepare('SELECT COUNT(*) n FROM pos_points WHERE active=1').get().n >= L.max_pos) throw new HttpError(403, `بلغت الحد المرخّص من نقاط البيع (${L.max_pos})`);
+    }
     db.prepare('UPDATE pos_points SET active=?,activity=? WHERE id=?').run(active,activity,point.id);
     return {ok:true};
   },{owner:true});
@@ -458,7 +462,7 @@ export function createApp({ dbFile, licensePath, tls, complianceIssuance = null,
   // ---------- المستخدمون ----------
   route('GET', '/api/users', () => db.prepare('SELECT id,username,role,active,pos_discount_limit,pos_wholesale,pos_manual_price,pos_manual_price_cap,allowed_price_levels FROM users').all().map(u=>({...u,allowed_price_levels:(()=>{try{return JSON.parse(u.allowed_price_levels||'[]');}catch{return [];}})(),pos_ids:db.prepare('SELECT pos_id FROM pos_user_access WHERE user_id=? ORDER BY pos_id').all(u.id).map(a=>a.pos_id)})), { owner: true });
   route('POST', '/api/users', ({ body }) => {
-    const L = lic(); if (db.prepare('SELECT COUNT(*) n FROM users WHERE active=1').get().n >= L.max_users) throw new HttpError(403, `بلغت الحد المرخّص من المستخدمين (${L.max_users})`);
+    // User accounts are independent of POS licensing.
     
     need(body.username && String(body.password || '').length >= 8 && ['owner', 'accountant', 'staff'].includes(body.role), 'بيانات المستخدم غير مكتملة');
     return tx(db,()=>{

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { nowRiyadh } from './lib.js';
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const PUB = path.join(here, 'license-pub.pem');
-const TRIAL = { status: 'trial', max_pos: 1, max_users: 2, modules: [], customer: 'نسخة تجريبية', expires: null, readOnly: false };
+const TRIAL = { status: 'trial', max_pos: null, max_users: null, modules: [], customer: 'نسخة تجريبية', expires: null, readOnly: false };
 
 export function verifyLicenseFile(obj, pubPem) {
   const ok = crypto.verify(null, Buffer.from(obj.payload, 'base64'), crypto.createPublicKey(pubPem), Buffer.from(obj.sig, 'base64'));
@@ -17,9 +17,10 @@ export function evaluate(licensePath, companyVat, today = nowRiyadh().date, pubP
   if (!fs.existsSync(licensePath) || !fs.existsSync(pubPath)) return { ...TRIAL };
   try {
     const p = verifyLicenseFile(JSON.parse(fs.readFileSync(licensePath, 'utf8')), fs.readFileSync(pubPath));
-    const base = { ...p, status: 'valid', readOnly: false };
+    if (!Number.isSafeInteger(p.max_pos) || p.max_pos < 1) throw new Error('عدد نقاط البيع المرخص غير صالح');
+    const base = { ...p, max_users: null, status: 'valid', readOnly: false };
     if (p.vat_number && companyVat && p.vat_number !== companyVat) return { ...base, status: 'mismatch', readOnly: true };
     if (p.expires && p.expires < today) return { ...base, status: 'expired', readOnly: true };
     return base;
-  } catch (e) { return { ...TRIAL, status: 'invalid', error: e.message }; }
+  } catch (e) { return { ...TRIAL, max_pos: 1, readOnly: true, status: 'invalid', error: e.message }; }
 }
