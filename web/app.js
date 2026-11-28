@@ -467,7 +467,7 @@ const tabs = {
   },
   async pos() {
     const [p,scale] = await Promise.all([api('pos'),api('settings/pos_scale')]), L = S.state.license;
-    $('#tab').innerHTML = `<div class="card"><p>المرخّص: <b>${L.max_pos}</b> نقطة بيع. كل نقطة لها بادئة في رقم الفاتورة وتتشارك سلسلة الفرع.</p><div class="row"><label>الاسم<input id="n"></label><label>البادئة (A, B…)<input id="x" maxlength="6"></label><button class="p" id="add">إضافة نقطة</button></div></div>
+    $('#tab').innerHTML = `<div class="card"><p>المرخّص: <b>${L.max_pos === null ? 'غير محدود (تجريبي)' : esc(L.max_pos)}</b> نقطة بيع. كل نقطة لها بادئة في رقم الفاتورة وتتشارك سلسلة الفرع.</p><div class="row"><label>الاسم<input id="n"></label><label>البادئة (A, B…)<input id="x" maxlength="6"></label><button class="p" id="add">إضافة نقطة</button></div></div>
     <div class="card"><table><tbody>${p.map(r => `<tr><td>${esc(r.name)}</td><td>${esc(r.prefix)}</td><td>${r.active ? 'مفعّلة' : 'موقوفة'}</td><td><a href="#" data-p="${r.id}" data-a="${r.active ? 0 : 1}">${r.active ? 'إيقاف' : 'تفعيل'}</a></td></tr>`).join('')}</tbody></table></div>`;
     $('#add').onclick = guard(async () => { await api('pos', { method: 'POST', body: { name: $('#n').value, prefix: $('#x').value } }); tabs.pos(); });
     $$('[data-p]').forEach(a => a.onclick = guard(async e => { e.preventDefault(); await api('pos/' + a.dataset.p, { method: 'PUT', body: { active: a.dataset.a === '1' } }); tabs.pos(); }));
@@ -500,7 +500,7 @@ const tabs = {
   },
   async sys() {
     const L = (await api('state')).license;
-    $('#tab').innerHTML = `<div class="card"><h3>الترخيص</h3><p>الحالة: <b>${L.status}</b> · العميل: ${esc(L.customer)} · نقاط البيع: ${L.max_pos} · المستخدمون: ${L.max_users} · ينتهي: ${esc(L.expires || '—')}</p>
+    $('#tab').innerHTML = `<div class="card"><h3>الترخيص</h3><p>الحالة: <b>${L.status}</b> · العميل: ${esc(L.customer)} · نقاط البيع: ${L.max_pos === null ? 'غير محدود (تجريبي)' : esc(L.max_pos)} · المستخدمون: غير محدود · ينتهي: ${esc(L.expires || '—')}</p>
     <label>الصق ملف الترخيص (JSON)<textarea id="lic" rows="4"></textarea></label><button id="al">تفعيل الترخيص</button></div>
     <div class="card"><h3>النسخ الاحتياطي</h3><p>نزّل نسخة كاملة من البيانات واحفظها خارج هذا الجهاز بانتظام.</p><a href="/api/backup"><button class="p">تنزيل نسخة احتياطية</button></a></div>`;
     $('#al').onclick = guard(async () => { await api('license', { method: 'POST', body: JSON.parse($('#lic').value) }); location.reload(); });
